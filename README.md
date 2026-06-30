@@ -20,13 +20,19 @@ Diff changed after verify → evidence is stale.
 ## The philosophy
 
 ```
-AGENTS.md / CLAUDE.md = reminders for agents.
-scripts/verify.sh     = real repo ritual.
-lf verify             = local evidence.
-lf explain            = diff understanding.
-pre-push hook         = local enforcement before pushing.
-GitHub Actions        = remote backup later.
+AGENTS.md / CLAUDE.md = reminders for agents
+scripts/verify.sh     = real repo ritual
+lf verify             = local proof
+lf status             = fresh/stale proof check
+pre-push hook         = local enforcement before pushing
+lf explain            = diff understanding
+GitHub Actions        = remote backup later
 ```
+
+LunarForge does **not** replace Claude Code, Codex, or manual driving. It is the
+**local evidence layer that runs after an AI edits your code**: it proves the
+checks passed, ties that proof to the exact code you're about to push, and
+blocks the push if the proof is missing, failed, or stale.
 
 ### Why AGENTS.md / CLAUDE.md are not enough by themselves
 
@@ -75,10 +81,14 @@ The MVP is exactly: **local verification + evidence + explanation.**
 3. You run `lf verify`.
 4. LunarForge runs your repo's required local lint/build/test command(s).
 5. LunarForge saves evidence tied to the exact current git diff.
-6. You run `lf explain`.
-7. LunarForge explains what changed, using the current diff + latest evidence.
-8. You review from a much better place.
+6. You optionally run `lf explain`.
+7. You review the change.
+8. When you push, the pre-push hook runs `lf status --require-fresh-passing`.
+9. If evidence is missing, failed, or stale, the push is blocked.
 ```
+
+**The invariant:** no fresh passing evidence means the repo is not ready to
+push.
 
 ---
 
@@ -111,17 +121,31 @@ its own `sh` on Windows).
 
 ---
 
-## Quick start
+## Day one
 
 ```bash
 cd your-repo
 lf init                 # creates .lunarforge.yml and .lf/
-# edit .lunarforge.yml, write scripts/verify.sh
+# edit .lunarforge.yml, write scripts/verify.sh (or verify.ps1)
 lf verify               # run checks, save evidence
 lf status               # is evidence fresh + passing?
-lf explain              # explain the current diff
+lf explain              # explain the current diff (optional)
 lf install-hooks        # block pushes without fresh passing evidence
 ```
+
+## Recommended daily loop
+
+```bash
+# manually drive Claude Code / Codex; the agent edits files
+git add -A && git commit -m "..."   # commit the change you want to push
+lf verify                           # prove the checks pass for that commit
+lf explain                          # (optional) understand the diff
+git push                            # pre-push hook gates on fresh passing evidence
+```
+
+The pre-push hook blocks the push unless fresh, passing evidence exists for the
+exact code being pushed. Commit first, then `lf verify`, so the evidence is tied
+to the commit you push.
 
 ---
 
@@ -155,7 +179,7 @@ evidence:
 ```
 
 You can list **multiple** verify commands; they run in order and stop on the
-first failure (use `lf verify --keep-going` to run them all).
+first failure (use `lf verify --continue-on-failure` to run them all).
 
 ### Example: Node
 
@@ -242,41 +266,74 @@ create `scripts/verify.sh` / `scripts/verify.ps1`.
 3. Computes a **diff hash** of the current changes (see below).
 4. Runs each verify command in order, capturing id, command string, start/end
    time, duration, exit code, stdout, stderr, and pass/fail.
-5. Stops on the first failure by default (`--keep-going` to override).
-6. Saves evidence under `.lf/runs/<timestamp>/` and updates `.lf/latest`.
+5. Stops on the first failure by default (`--continue-on-failure` to override).
+6. Saves evidence under `.lf/runs/<timestamp>/` and updates `.lf/latest`, even
+   when a command fails.
 
 ```
 LunarForge verify
 
-✅ lint passed
-✅ typecheck passed
-✅ test passed
-✅ build passed
+✅ lint passed       1.2s
+✅ typecheck passed  3.8s
+✅ test passed       5.4s
+✅ build passed      8.1s
 
-Evidence saved:
+Result:
+✅ ready locally
+
+Evidence:
 .lf/runs/2026-06-30T14-22-10/evidence.json
 
-Diff hash:
+Diff:
 sha256:abc123...
 ```
 
-On failure it prints `Not ready.`, still saves evidence, and exits non-zero.
+On failure it prints the failing command and points at its logs, still saves
+evidence, and exits non-zero:
+
+```
+LunarForge verify
+
+✅ lint passed  1.2s
+❌ test failed  2.9s
+
+Result:
+❌ not ready
+
+Failed command:
+npm test
+
+Logs:
+.lf/runs/2026-06-30T14-25-03/commands/test.stdout.txt
+.lf/runs/2026-06-30T14-25-03/commands/test.stderr.txt
+```
 
 #### The diff hash
 
-Evidence is bound to the current change via a deterministic SHA-256 of:
+Evidence is bound to the exact code that would be pushed via a deterministic
+SHA-256 of:
 
 ```bash
+git rev-parse HEAD          # the commit being pushed
 git diff --binary           # tracked, unstaged changes
 git diff --cached --binary  # staged changes
 git status --porcelain      # which files are added/modified/untracked
 ```
 
-If your **tracked or staged** working-tree changes change after `lf verify`,
-the hash changes and the evidence becomes **stale**. (Note: this scope is by
-design. Editing the *contents* of an untracked file only changes the hash once
-the file is tracked/staged — untracked files register by name via
-`git status --porcelain`.)
+If **HEAD advances** (you make a new commit) or your **tracked/staged**
+working-tree changes change after `lf verify`, the hash changes and the evidence
+becomes **stale**. LunarForge's own evidence directory (`.lf/`) is excluded from
+the hash, so recording evidence never makes that evidence stale.
+
+**Known limitations (by design for the MVP):**
+
+- The *contents* of an **untracked** file are not hashed — an untracked file
+  registers only by name via `git status --porcelain`. Track or stage a file to
+  have its contents gate the push.
+- The hash reflects HEAD plus uncommitted changes, not the full file tree. If
+  you `lf verify` a dirty tree and then commit those exact changes, re-run
+  `lf verify` so the evidence is tied to the new commit (committing changes the
+  hash). The recommended loop — *commit, then verify* — avoids this.
 
 #### Evidence layout
 
@@ -325,27 +382,47 @@ per-command files:
 
 ### `lf status`
 
-Loads the latest evidence, recomputes the current diff hash, and reports
-whether the evidence is **fresh** (matches the current diff) and **passing**.
+This is the core enforcement command. It loads the latest evidence, recomputes
+the current diff hash, and reports whether the evidence is **fresh** (matches
+the current code) and **passing**.
 
 ```
 LunarForge status
 
-Latest run:
-  .lf/runs/2026-06-30T14-22-10
+Latest evidence:
+✅ passed
+
+Freshness:
+✅ fresh for current diff
 
 Result:
-  ✅ passed
-
-Evidence:
-  ⚠️ stale — current diff changed after verification
-
-Run:
-  lf verify
+✅ ready to push
 ```
 
-`lf status --strict` exits non-zero unless the evidence is **fresh and
-passing**. This is what the pre-push hook uses.
+`lf status --require-fresh-passing` (used by the pre-push hook) makes the exit
+code the source of truth. It exits:
+
+- **`0`** only when latest evidence **exists**, **passed**, and its diff hash
+  **matches** the current code.
+- **non-zero** when any of these hold: no evidence exists, the latest run
+  failed, the evidence is stale, the current directory is not a git repo, or
+  `.lunarforge.yml` is missing/invalid.
+
+`--strict` is accepted as an alias. `lf status --json` prints the same decision
+as machine-readable JSON (`ready`, `reason`, hashes, run id) for scripting.
+
+Example states:
+
+```
+Latest evidence:        Latest evidence:        Latest evidence:
+❌ none found           ✅ passed               ❌ failed
+
+Result:                 Freshness:              Result:
+❌ not ready to push    ⚠️ stale — ...          ❌ not ready to push
+
+Run:                    Result:                 Run:
+lf verify               ❌ not ready to push    lf verify
+```
 
 ### `lf explain`
 
@@ -363,29 +440,90 @@ passing**. This is what the pre-push hook uses.
 
 5. Saves the explanation to `.lf/runs/<run>/explanation.md` and prints it.
 
-The generated prompt is **always** saved to
-`.lf/runs/<run>/explain-prompt.md` first — so if the explain command is missing
-or fails, you still have the prompt to run manually. Use `lf explain
---prompt-only` to build the prompt without invoking any agent.
+`lf explain` is **advisory, not a gate** — it is not required by the pre-push
+hook, and it works whether evidence is fresh, stale, failed, or missing. The
+prompt asks the agent for a concise summary, files changed, why each changed,
+verification status, whether evidence is fresh/stale/failed/missing, risks, and
+manual review suggestions.
+
+The generated prompt is **always** saved to `.lf/runs/<run>/explain-prompt.md`
+first — so if the explain command is missing or fails, you still have the prompt
+to run manually (and `lf explain` exits non-zero without aborting your work).
+
+Flags:
+
+- `lf explain --print-prompt` — print the generated prompt and stop (no agent).
+- `lf explain --no-run` (alias `--prompt-only`) — save the prompt without
+  invoking any agent.
+
+The explain command can be a bare name resolved on `PATH` (e.g. `claude`) or a
+repo-relative path (e.g. `./scripts/fake-explain.sh`); relative commands resolve
+against the repo root. This makes it easy to wire a fake explain script in CI or
+fixtures.
 
 ### `lf install-hooks`
 
 Installs a **pre-push** hook (not pre-commit — pre-commit is too noisy for WIP
-commits). The hook runs `lf status --strict`, so a push is blocked unless there
-is **fresh, passing evidence** for the current diff:
+commits). The hook runs `lf status --require-fresh-passing`, so a push is blocked
+unless there is **fresh, passing evidence** for the current code. The hook only
+**reads** saved evidence; it does **not** re-run your tests, so it's fast.
 
-```
-pre-push requires fresh passing evidence
-```
-
-Bypass once with `git push --no-verify`. The hook is safe about existing hooks:
+The hook is safe about existing hooks:
 
 - A previously LunarForge-managed hook is updated in place.
 - An existing **foreign** `pre-push` hook is **backed up** (e.g.
   `pre-push.backup-20260630T142210`) before the new one is written, so nothing
   is silently destroyed.
+- It honors `core.hooksPath` if you've configured one.
+- It is a POSIX `sh` script and is made executable on Unix-like systems. On
+  Windows, Git for Windows ships its own `sh`, so the hook runs there too.
 
-It honors `core.hooksPath` if you've configured one.
+#### Hooks are local — mirror them remotely later
+
+A git pre-push hook is a **local** convenience and can be bypassed with
+`git push --no-verify`. It is not a server-side guarantee. The intended end
+state is to mirror the same `.lunarforge.yml` checks in **GitHub Actions** (or
+another CI) so the remote enforces what the local hook encourages. That remote
+mirror is on the [roadmap](#roadmap) and intentionally not part of this MVP.
+
+---
+
+## Try it on the fixture
+
+A self-contained fixture under [`examples/fixture-basic/`](examples/fixture-basic/)
+proves the whole loop end-to-end with **no Node, CMake, or Claude required**. Its
+verify step just checks that `src/hello.txt` contains the expected text, and its
+explain command is a fake local script.
+
+```bash
+cp -r examples/fixture-basic /tmp/lf-demo && cd /tmp/lf-demo
+git init
+git add .
+git commit -m "fixture"
+
+lf verify                          # ✅ contents passed → evidence saved
+lf status                          # ✅ passed, ✅ fresh → ready to push
+lf status --require-fresh-passing  # exits 0
+lf explain                         # runs scripts/fake-explain.sh, saves explanation
+```
+
+Now change a tracked file and watch the evidence go stale:
+
+```bash
+echo "change" >> src/hello.txt
+lf status                          # ⚠️ stale → not ready to push
+lf status --require-fresh-passing  # exits non-zero
+```
+
+And see the pre-push gate in action:
+
+```bash
+lf install-hooks
+git add -A && git commit -m "change"
+git push        # blocked: evidence is stale for this commit
+lf verify       # re-prove for the new commit
+git push        # now allowed
+```
 
 ---
 
@@ -422,6 +560,12 @@ examples/
   cpp/.lunarforge.yml
   scripts/verify.sh
   scripts/verify.ps1
+  fixture-basic/            # self-contained end-to-end fixture (no external deps)
+    .lunarforge.yml
+    src/hello.txt
+    scripts/verify.sh
+    scripts/verify.ps1
+    scripts/fake-explain.sh
 ```
 
 ## Development

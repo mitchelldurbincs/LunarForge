@@ -54,6 +54,21 @@ func TestWriteLoadLatest(t *testing.T) {
 	}
 }
 
+func TestArtifactExcludes(t *testing.T) {
+	repo := filepath.FromSlash("/repo")
+	if got := ArtifactExcludes(repo, filepath.Join(repo, ".lf", "runs")); len(got) != 1 || got[0] != ".lf" {
+		t.Errorf("default layout: got %v, want [.lf]", got)
+	}
+	// Evidence dir directly under repo -> exclude it (parent is repo root).
+	if got := ArtifactExcludes(repo, filepath.Join(repo, "evidence")); len(got) != 1 || got[0] != "evidence" {
+		t.Errorf("flat layout: got %v, want [evidence]", got)
+	}
+	// Evidence dir == repo root -> no safe exclude.
+	if got := ArtifactExcludes(repo, repo); got != nil {
+		t.Errorf("repo-root evidence dir: got %v, want nil", got)
+	}
+}
+
 func TestLatestRunIDFallbackScan(t *testing.T) {
 	evidenceDir := t.TempDir()
 	for _, id := range []string{"2026-06-30T10-00-00", "2026-06-30T12-00-00"} {

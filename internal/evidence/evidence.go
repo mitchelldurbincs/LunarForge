@@ -64,6 +64,28 @@ func NewRunID(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15-04-05")
 }
 
+// ArtifactExcludes returns the repo-relative pathspec(s) that LunarForge writes
+// (its runs and latest pointer) and that must be excluded from the diff hash so
+// recording evidence never makes that evidence stale. evidenceDir and repoDir
+// should both be absolute. It returns nil when no safe exclude can be derived
+// (e.g. the evidence dir is the repo root, or lives outside the repo).
+func ArtifactExcludes(repoDir, evidenceDir string) []string {
+	// Prefer excluding the parent of the runs dir (".lf" by default), since the
+	// latest pointer lives there too.
+	for _, candidate := range []string{filepath.Dir(evidenceDir), evidenceDir} {
+		rel, err := filepath.Rel(repoDir, candidate)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." || rel == "" || strings.HasPrefix(rel, "../") || rel == ".." {
+			continue
+		}
+		return []string{rel}
+	}
+	return nil
+}
+
 // RunDir returns the directory for a given run id under the evidence dir.
 func RunDir(evidenceDir, runID string) string {
 	return filepath.Join(evidenceDir, runID)

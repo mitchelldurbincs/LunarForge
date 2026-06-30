@@ -1,0 +1,19 @@
+version: 1
+
+project:
+  name: fixture-basic
+
+verify:
+  commands:
+    - id: contents
+      run: ./scripts/verify.sh
+
+explain:
+  # A fake, dependency-free explain command so the fixture works without
+  # Claude/Codex installed. For real use, point this at `claude` etc.
+  command: ./scripts/fake-explain.sh
+  args: []
+
+evidence:
+  dir: .lf/runs
+  require_fresh_diff: true

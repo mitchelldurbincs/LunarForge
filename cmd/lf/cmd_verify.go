@@ -13,14 +13,16 @@ import (
 
 func cmdVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
-	keepGoing := fs.Bool("keep-going", false, "run all commands even after a failure")
+	continueOnFailure := fs.Bool("continue-on-failure", false, "run all commands even after a failure")
+	keepGoing := fs.Bool("keep-going", false, "alias of --continue-on-failure")
 	quiet := fs.Bool("quiet", false, "do not stream command output to the terminal")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: lf verify [--keep-going] [--quiet]\n\nRuns verify commands and saves evidence tied to the current diff.\n")
+		fmt.Fprintf(os.Stderr, "Usage: lf verify [--continue-on-failure] [--quiet]\n\nRuns verify commands and saves evidence tied to the current diff.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	keepRunning := *continueOnFailure || *keepGoing
 
 	l, err := load()
 	if err != nil {
@@ -34,7 +36,7 @@ func cmdVerify(args []string) error {
 		RepoDir:     l.repoDir,
 		EvidenceDir: l.evidenceDir,
 		Now:         time.Now(),
-		KeepGoing:   *keepGoing,
+		KeepGoing:   keepRunning,
 	}
 	if !*quiet {
 		opts.Stream = streamWriter()
@@ -46,34 +48,48 @@ func cmdVerify(args []string) error {
 	}
 	ev := res.Evidence
 
-	// Per-command pass/fail lines.
+	// Per-command pass/fail lines with durations.
 	configured := l.cfg.Verify.Commands
-	for i, c := range ev.Commands {
-		_ = i
+	for _, c := range ev.Commands {
 		if c.Result == evidence.ResultPassed {
-			fmt.Printf("✅ %s passed\n", c.ID)
+			fmt.Printf("✅ %s passed\t%s\n", c.ID, fmtDuration(c.DurationMs))
 		} else {
-			fmt.Printf("❌ %s failed (exit %d)\n", c.ID, c.ExitCode)
+			fmt.Printf("❌ %s failed\t%s\n", c.ID, fmtDuration(c.DurationMs))
 		}
 	}
 	// Note commands that were skipped because we stopped on first failure.
-	if len(ev.Commands) < len(configured) && !*keepGoing {
+	if len(ev.Commands) < len(configured) && !keepRunning {
 		for _, c := range configured[len(ev.Commands):] {
 			fmt.Printf("⏭️  %s skipped\n", c.ID)
 		}
 	}
 
 	fmt.Println()
-	if !ev.Passed() {
-		fmt.Println("Not ready.")
-		fmt.Println()
+	fmt.Println("Result:")
+	if ev.Passed() {
+		fmt.Println("✅ ready locally")
+	} else {
+		fmt.Println("❌ not ready")
 	}
 
-	rel := relPath(l.repoDir, filepath.Join(res.RunDir, "evidence.json"))
-	fmt.Println("Evidence saved:")
-	fmt.Printf("%s\n", rel)
+	// On failure, point directly at the failing command and its logs.
+	if !ev.Passed() {
+		if failed := firstFailed(ev); failed != nil {
+			fmt.Println()
+			fmt.Println("Failed command:")
+			fmt.Printf("%s\n", failed.Run)
+			fmt.Println()
+			fmt.Println("Logs:")
+			fmt.Printf("%s\n", relPath(l.repoDir, filepath.Join(res.RunDir, failed.StdoutPath)))
+			fmt.Printf("%s\n", relPath(l.repoDir, filepath.Join(res.RunDir, failed.StderrPath)))
+		}
+	}
+
 	fmt.Println()
-	fmt.Println("Diff hash:")
+	fmt.Println("Evidence:")
+	fmt.Printf("%s\n", relPath(l.repoDir, filepath.Join(res.RunDir, "evidence.json")))
+	fmt.Println()
+	fmt.Println("Diff:")
 	fmt.Printf("%s\n", ev.DiffHash)
 
 	if !ev.Passed() {
@@ -82,6 +98,24 @@ func cmdVerify(args []string) error {
 		return &exitError{code: 1}
 	}
 	return nil
+}
+
+func firstFailed(ev *evidence.Evidence) *evidence.Command {
+	for i := range ev.Commands {
+		if ev.Commands[i].Result != evidence.ResultPassed {
+			return &ev.Commands[i]
+		}
+	}
+	return nil
+}
+
+// fmtDuration renders a millisecond duration as a friendly seconds value, e.g.
+// "1.2s". Sub-100ms durations show milliseconds to stay informative.
+func fmtDuration(ms int64) string {
+	if ms < 100 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000.0)
 }
 
 func relPath(base, target string) string {

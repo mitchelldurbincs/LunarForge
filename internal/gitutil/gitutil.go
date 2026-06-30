@@ -80,20 +80,39 @@ func Diff(dir string) (string, error) {
 	return b.String(), nil
 }
 
-// DiffHash computes a deterministic hash of the current tracked/staged
-// working-tree changes. It combines:
+// DiffHash computes a deterministic hash of the exact code that would be
+// pushed: the current HEAD commit plus any tracked/staged working-tree changes.
+// It combines:
 //
+//	git rev-parse HEAD
 //	git diff --binary
 //	git diff --cached --binary
 //	git status --porcelain
 //
-// If any of those change after `lf verify`, the hash changes and evidence
-// becomes stale. The returned value is prefixed with "sha256:".
-func DiffHash(dir string) (string, error) {
+// If HEAD advances, or tracked/staged changes change after `lf verify`, the
+// hash changes and evidence becomes stale. The returned value is prefixed with
+// "sha256:".
+//
+// excludes are repo-relative pathspecs (e.g. ".lf") that are removed from every
+// section. This is how LunarForge keeps its own evidence artifacts from
+// invalidating the hash they are recorded under. The same excludes must be used
+// at verify time and at status time for hashes to match.
+func DiffHash(dir string, excludes ...string) (string, error) {
 	if !IsRepo(dir) {
 		return "", fmt.Errorf("not inside a git repository")
 	}
 	h := sha256.New()
+
+	// Bind evidence to the exact commit being pushed. Without this, any two
+	// clean working trees produce identical (empty) diffs and would share a
+	// hash, so committing new work over previously-verified clean evidence would
+	// look "fresh". On an unborn branch (no commits) there is no HEAD.
+	head, err := runBytes(dir, "rev-parse", "HEAD")
+	if err != nil {
+		head = []byte("(no-head)")
+	}
+	fmt.Fprintf(h, "HEAD:%d:", len(head))
+	h.Write(head)
 
 	parts := [][]string{
 		{"diff", "--binary"},
@@ -101,11 +120,19 @@ func DiffHash(dir string) (string, error) {
 		{"status", "--porcelain"},
 	}
 	for _, args := range parts {
-		out, err := runBytes(dir, args...)
+		full := append([]string{}, args...)
+		if len(excludes) > 0 {
+			full = append(full, "--", ".")
+			for _, e := range excludes {
+				full = append(full, ":(exclude)"+e)
+			}
+		}
+		out, err := runBytes(dir, full...)
 		if err != nil {
 			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
-		// Length-prefix each section so concatenation is unambiguous.
+		// Length-prefix each section, labeled by the base args (not the
+		// pathspec), so the layout stays stable.
 		fmt.Fprintf(h, "%s:%d:", strings.Join(args, " "), len(out))
 		h.Write(out)
 	}
