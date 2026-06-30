@@ -80,6 +80,32 @@ type GitHubActions struct {
 	// UploadArtifacts is a pointer so an unset value defaults to true (upload
 	// evidence), while an explicit `false` disables the upload step.
 	UploadArtifacts *bool `yaml:"upload_artifacts"`
+	// Install controls how the generated workflow obtains the `lf` binary. When
+	// the whole section is absent, the generator auto-detects: a repo containing
+	// ./cmd/lf (LunarForge itself) defaults to source mode, any other repo
+	// defaults to go-install mode.
+	Install Install `yaml:"install"`
+}
+
+// Install describes how the generated GitHub Actions workflow gets the `lf`
+// binary. It is optional; an empty Mode triggers auto-detection. The three
+// modes are:
+//
+//   - "source":     build `lf` from ./cmd/lf in this repo (LunarForge itself).
+//   - "go-install": `go install <Module>@<Ref>` (a normal repo using LunarForge).
+//   - "custom":     run explicit Commands that put `lf` on PATH.
+type Install struct {
+	Mode string `yaml:"mode"`
+	// Module is the `go install` target for go-install mode (e.g.
+	// "github.com/mitchelldurbincs/lunarforge/cmd/lf"). When empty the generator
+	// derives it from go.mod, falling back to the canonical LunarForge path.
+	Module string `yaml:"module"`
+	// Ref is the version/ref appended after @ for go-install mode (e.g. "latest"
+	// or "v0.1.0"). Empty means "latest".
+	Ref string `yaml:"ref"`
+	// Commands are the explicit install steps for custom mode. They must leave an
+	// `lf` binary on PATH. Ignored unless Mode is "custom".
+	Commands []string `yaml:"install_commands"`
 }
 
 // Path returns the absolute path the config was loaded from.

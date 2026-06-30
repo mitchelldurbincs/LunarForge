@@ -566,9 +566,12 @@ Evidence:
 Generates `.github/workflows/lunarforge.yml`:
 
 ```bash
-lf gen-actions                                  # default path
-lf gen-actions --output .github/workflows/x.yml # custom path
-lf gen-actions --force                          # overwrite an existing file
+lf gen-actions                                       # default path, auto-detected mode
+lf gen-actions --install-mode source                 # build lf from ./cmd/lf
+lf gen-actions --install-mode go-install             # go install lf (consumer repos)
+lf gen-actions --install-mode go-install --install-ref v0.1.0
+lf gen-actions --output .github/workflows/x.yml      # custom path
+lf gen-actions --force                               # overwrite an existing file
 ```
 
 It will **not** overwrite an existing workflow unless `--force` is passed, and
@@ -577,8 +580,45 @@ prints the path plus next steps. The generated workflow:
 - runs on pull requests and pushes to `main`,
 - uses `concurrency` to cancel superseded runs,
 - uses minimal `permissions: contents: read`,
-- checks out the repo, builds `lf` from `./cmd/lf`, runs `./lf ci`,
+- obtains `lf` according to the **install mode** (see below) and runs `lf ci`,
 - uploads `.lf/runs/**` as an artifact (`if: always()`).
+
+#### Install modes
+
+`lf gen-actions` needs to know how the workflow should get the `lf` binary.
+There are three modes:
+
+| Mode | For | How the workflow gets `lf` | Runs |
+|---|---|---|---|
+| `source` | the **LunarForge repo itself** | `go build -o lf ./cmd/lf` | `./lf ci` |
+| `go-install` | a **normal repo using LunarForge** | `go install <module>/cmd/lf@<ref>` | `lf ci` |
+| `custom` | release binaries / curl | your `install_commands` | `lf ci` |
+
+When `--install-mode` is omitted, the mode comes from
+`ci.github_actions.install.mode` in `.lunarforge.yml`, or is **auto-detected**:
+
+- if `./cmd/lf` **exists**, default to **source** mode (you're in LunarForge);
+- otherwise default to **go-install** mode (a consumer repo).
+
+For `go-install`, the module path is read from your `go.mod`
+(`<module>/cmd/lf`), falling back to
+`github.com/mitchelldurbincs/lunarforge/cmd/lf`. Override it with
+`--install-module`, and pin the version with `--install-ref`
+(`latest` by default).
+
+`custom` mode is configured in `.lunarforge.yml` and runs explicit install
+steps before `lf ci`:
+
+```yaml
+ci:
+  github_actions:
+    install:
+      mode: custom
+      install_commands:
+        - curl -L https://example.com/lf -o lf
+        - chmod +x lf
+        - sudo mv lf /usr/local/bin/lf
+```
 
 ### Recommended setup
 
@@ -626,14 +666,81 @@ ci:
     runs_on: ubuntu-latest      # runner
     timeout_minutes: 30         # job timeout
     upload_artifacts: true      # upload .lf/runs/** as an artifact
+    install:
+      mode: go-install          # source | go-install | custom (default: auto-detect)
+      module: github.com/mitchelldurbincs/lunarforge/cmd/lf  # go-install target
+      ref: latest               # go-install version/ref
+      install_commands: []      # custom-mode install steps
   setup_commands: []            # commands run before `lf ci`
 ```
 
 Example workflows for common stacks:
 
-- [`lunarforge-basic.yml`](examples/github-actions/lunarforge-basic.yml) — self-contained (matches `lf gen-actions`).
-- [`lunarforge-node.yml`](examples/github-actions/lunarforge-node.yml) — Node setup + `npm ci`.
+- [`lunarforge-source.yml`](examples/github-actions/lunarforge-source.yml) — **source mode** (developing LunarForge itself).
+- [`lunarforge-go-install.yml`](examples/github-actions/lunarforge-go-install.yml) — **go-install mode** (a normal repo using LunarForge).
+- [`lunarforge-basic.yml`](examples/github-actions/lunarforge-basic.yml) — self-contained source-mode workflow.
+- [`lunarforge-node.yml`](examples/github-actions/lunarforge-node.yml) — Node consumer: setup-node + `npm ci`.
 - [`lunarforge-windows.yml`](examples/github-actions/lunarforge-windows.yml) — `windows-latest` for C++/desktop.
+
+---
+
+## Using generated workflows in consumer repos
+
+LunarForge enforces the same gate at three layers. Local is fast and
+bypassable; remote is authoritative; workflow generation is how you set the
+remote layer up:
+
+```
+local:
+  lf verify                          # prove the working tree passes
+  lf status --require-fresh-passing  # is the latest proof still valid?
+  pre-push hook                      # local enforcement (bypassable with --no-verify)
+
+remote:
+  lf ci inside GitHub Actions        # authoritative re-run of the same checks
+
+workflow generation:
+  lf gen-actions --install-mode source       # for LunarForge itself
+  lf gen-actions --install-mode go-install    # for normal repos
+```
+
+The distinction that makes generation actually usable in a real project is the
+**install mode**. The LunarForge repo contains `./cmd/lf` and can build `lf`
+from source. A normal project that *uses* LunarForge does **not** — so the
+generated workflow must install `lf` instead of building it.
+
+```bash
+# In the LunarForge repo (source is auto-detected because ./cmd/lf exists):
+lf gen-actions --install-mode source
+
+# In a normal project repo (go-install is auto-detected because there is no ./cmd/lf):
+lf gen-actions --install-mode go-install --install-ref latest
+```
+
+The go-install workflow runs `lf ci` (the binary is on `PATH`), never
+`./lf ci`, and never references `./cmd/lf` — so it does not assume the consumer
+repo contains LunarForge source. A self-contained example of a consumer repo
+lives in
+[`examples/fixture-consumer-basic/`](examples/fixture-consumer-basic/): it has a
+`.lunarforge.yml`, a `verify.sh`/`verify.ps1`, and a `src/hello.txt`, but **no
+`cmd/lf`**.
+
+### Limitation: `@latest` needs an installable module
+
+`go install <module>/cmd/lf@latest` only works once the LunarForge module is
+actually fetchable by `go install` at that ref — i.e. it's a public module (or
+reachable via your `GOPRIVATE`/proxy config) and the ref exists. Until tagged
+releases exist you have a few honest options:
+
+- pin a **branch or commit** instead of a tag, e.g.
+  `lf gen-actions --install-mode go-install --install-ref main` (Go module
+  pseudo-versions accept a branch name or commit SHA);
+- use **`custom` mode** to download a prebuilt binary in CI;
+- or, while iterating, vendor LunarForge into the consumer repo and use
+  `source` mode.
+
+When real releases exist, switch back to `--install-ref v0.1.0` (or `latest`)
+for a clean, version-pinned install.
 
 ---
 
