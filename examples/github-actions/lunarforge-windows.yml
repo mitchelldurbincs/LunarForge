@@ -1,8 +1,12 @@
-# Windows / C++ desktop LunarForge CI workflow.
+# Windows / C++ desktop LunarForge CI workflow (consumer / go-install mode).
 #
 # Same model as the others: `lf ci` runs the verify.commands from
-# .lunarforge.yml. What changes is the runner and the project setup. C++ /
-# CMake / Visual Studio projects usually need a compiler toolchain and a
+# .lunarforge.yml. What changes here is the runner (windows-latest) and the
+# project setup. This is a normal project that *uses* LunarForge, so `lf` is
+# installed with `go install`; on Windows `go install` produces `lf.exe` on
+# PATH, which is still invoked as `lf ci`.
+#
+# C++ / CMake / Visual Studio projects usually need a compiler toolchain and a
 # configure/build bootstrap that GitHub Actions cannot infer — add those steps
 # below. LunarForge does not provide them.
 name: LunarForge
@@ -35,8 +39,9 @@ jobs:
         with:
           go-version: stable
 
-      - name: Build LunarForge
-        run: go build -o lf.exe ./cmd/lf
+      - name: Install LunarForge
+        run: go install github.com/mitchelldurbincs/lunarforge/cmd/lf@latest
+        # go install drops lf.exe in $(go env GOPATH)\bin, which setup-go adds to PATH.
 
       # --- Project setup: configure the native build before lf ci ---
       # CMake/Visual Studio projects typically need a toolchain + configure step,
@@ -46,7 +51,7 @@ jobs:
       # Adjust to your project. LunarForge does not set up native toolchains.
 
       - name: Run LunarForge CI
-        run: .\lf.exe ci
+        run: lf ci
 
       - name: Upload LunarForge evidence
         if: always()

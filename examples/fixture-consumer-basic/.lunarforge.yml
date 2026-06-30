@@ -1,0 +1,30 @@
+version: 1
+
+project:
+  name: fixture-consumer-basic
+
+# This fixture simulates a NORMAL project that uses LunarForge. Crucially, it
+# does NOT contain ./cmd/lf — there is no LunarForge source here to build. So
+# `lf gen-actions` defaults to (and is configured for) go-install mode: CI
+# installs `lf` with `go install` rather than building it from source.
+
+verify:
+  commands:
+    - id: contents
+      run: ./scripts/verify.sh
+
+evidence:
+  dir: .lf/runs
+  require_fresh_diff: true
+
+ci:
+  github_actions:
+    workflow_name: LunarForge
+    runs_on: ubuntu-latest
+    timeout_minutes: 30
+    upload_artifacts: true
+    install:
+      # go-install is what a consumer repo wants: install lf, do not build it.
+      mode: go-install
+      module: github.com/mitchelldurbincs/lunarforge/cmd/lf
+      ref: latest

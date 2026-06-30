@@ -1,0 +1,40 @@
+version: 1
+
+project:
+  name: lunarforge
+
+# LunarForge dogfoods itself: these are the verify commands that `lf verify`
+# and `lf ci` run. The generated GitHub Actions workflow
+# (.github/workflows/lunarforge.yml) builds `lf` from ./cmd/lf (source mode) and
+# delegates to `./lf ci`, which runs exactly these commands — one source of
+# truth, no drift between local and remote.
+verify:
+  commands:
+    - id: test
+      run: go test ./...
+    - id: vet
+      run: go vet ./...
+    - id: build
+      run: go build -o lf ./cmd/lf
+
+explain:
+  agent: claude
+  command: claude
+  args:
+    - --print
+    - --permission-mode
+    - plan
+
+evidence:
+  dir: .lf/runs
+  require_fresh_diff: true
+
+ci:
+  github_actions:
+    workflow_name: LunarForge
+    runs_on: ubuntu-latest
+    timeout_minutes: 30
+    upload_artifacts: true
+    install:
+      # This repo IS LunarForge, so build lf from ./cmd/lf rather than installing.
+      mode: source

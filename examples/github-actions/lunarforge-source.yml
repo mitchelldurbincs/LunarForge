@@ -1,0 +1,51 @@
+# Source-mode LunarForge CI workflow.
+#
+# Use this when you are developing LunarForge ITSELF (the repo contains
+# ./cmd/lf). It builds `lf` from source and runs `./lf ci`, which executes the
+# verify.commands from .lunarforge.yml. This is the output of:
+#
+#   lf gen-actions --install-mode source
+#
+# For a normal project that *uses* LunarForge, see lunarforge-go-install.yml.
+name: LunarForge
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: lunarforge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build LunarForge
+        run: go build -o lf ./cmd/lf
+
+      - name: Run LunarForge CI
+        run: ./lf ci
+
+      - name: Upload LunarForge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunarforge-evidence
+          path: .lf/runs/**
