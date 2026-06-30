@@ -21,6 +21,7 @@ type Config struct {
 	Verify   Verify   `yaml:"verify"`
 	Explain  Explain  `yaml:"explain"`
 	Evidence Evidence `yaml:"evidence"`
+	CI       CI       `yaml:"ci"`
 
 	// path is the absolute path the config was loaded from. It is not part of
 	// the serialized YAML.
@@ -55,6 +56,30 @@ type Explain struct {
 type Evidence struct {
 	Dir              string `yaml:"dir"`
 	RequireFreshDiff bool   `yaml:"require_fresh_diff"`
+}
+
+// CI configures the optional remote CI mirror. It is entirely optional —
+// `lf ci` and `lf gen-actions` work with sensible defaults when this section is
+// absent. The verify commands remain the single source of truth; CI only
+// controls how the generated workflow wraps them.
+type CI struct {
+	GitHubActions GitHubActions `yaml:"github_actions"`
+	// SetupCommands are optional shell commands run before `lf ci` in the
+	// generated workflow (e.g. "npm ci"). They install project dependencies that
+	// GitHub Actions cannot infer. Emitted as a single "Project setup" step.
+	SetupCommands []string `yaml:"setup_commands"`
+}
+
+// GitHubActions holds the knobs for the generated GitHub Actions workflow. Every
+// field is optional; zero values fall back to the generator defaults.
+type GitHubActions struct {
+	Enabled        bool   `yaml:"enabled"`
+	WorkflowName   string `yaml:"workflow_name"`
+	RunsOn         string `yaml:"runs_on"`
+	TimeoutMinutes int    `yaml:"timeout_minutes"`
+	// UploadArtifacts is a pointer so an unset value defaults to true (upload
+	// evidence), while an explicit `false` disables the upload step.
+	UploadArtifacts *bool `yaml:"upload_artifacts"`
 }
 
 // Path returns the absolute path the config was loaded from.

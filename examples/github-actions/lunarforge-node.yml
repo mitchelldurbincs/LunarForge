@@ -1,0 +1,58 @@
+# Node project LunarForge CI workflow.
+#
+# LunarForge mirrors your verify.commands remotely, but it does NOT install your
+# project's dependencies — Node repos still need Node set up and `npm ci` run
+# before `lf ci`. Add those steps here (or generate them from
+# `ci.setup_commands` in .lunarforge.yml). The actual lint/test/build still lives
+# in .lunarforge.yml and is invoked once, by `lf ci`.
+name: LunarForge
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: lunarforge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build LunarForge
+        run: go build -o lf ./cmd/lf
+
+      # --- Project setup: install Node and dependencies before lf ci ---
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run LunarForge CI
+        run: ./lf ci
+
+      - name: Upload LunarForge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunarforge-evidence
+          path: .lf/runs/**

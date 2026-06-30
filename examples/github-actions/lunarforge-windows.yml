@@ -1,0 +1,56 @@
+# Windows / C++ desktop LunarForge CI workflow.
+#
+# Same model as the others: `lf ci` runs the verify.commands from
+# .lunarforge.yml. What changes is the runner and the project setup. C++ /
+# CMake / Visual Studio projects usually need a compiler toolchain and a
+# configure/build bootstrap that GitHub Actions cannot infer — add those steps
+# below. LunarForge does not provide them.
+name: LunarForge
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: lunarforge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build LunarForge
+        run: go build -o lf.exe ./cmd/lf
+
+      # --- Project setup: configure the native build before lf ci ---
+      # CMake/Visual Studio projects typically need a toolchain + configure step,
+      # e.g.:
+      #   - uses: ilammy/msvc-dev-cmd@v1
+      #   - run: cmake -B build -S .
+      # Adjust to your project. LunarForge does not set up native toolchains.
+
+      - name: Run LunarForge CI
+        run: .\lf.exe ci
+
+      - name: Upload LunarForge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunarforge-evidence
+          path: .lf/runs/**
