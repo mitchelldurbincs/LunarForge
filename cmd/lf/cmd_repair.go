@@ -136,83 +136,165 @@ func cmdRepair(args []string) error {
 	}
 	verifyAfter := l.cfg.RepairVerifyAfterEach() && !*noVerify
 
+	// Print hooks reproduce `lf repair`'s per-attempt output. `lf loop` passes its
+	// own hooks for a more compact format; the mechanics are identical.
+	hooks := repairHooks{
+		beforeAttempt: func(attempt, max int) {
+			fmt.Println()
+			fmt.Printf("Attempt %d/%d:\n", attempt, max)
+			fmt.Printf("🤖 running repair agent: %s\n", resolvedName)
+		},
+		onAgentError: func(_ int, err error) {
+			fmt.Fprintf(os.Stderr, "lf repair: %v\n", err)
+		},
+		onSkipVerify: func(_ int) {
+			fmt.Println("(verification skipped: --no-verify)")
+		},
+		beforeVerify: func(_ int) {
+			fmt.Println("🔁 running lf verify")
+		},
+		afterVerify: func(_ int, passed bool, ev *evidence.Evidence) {
+			if passed {
+				fmt.Println("✅ verify passed")
+				return
+			}
+			if failed := firstFailed(ev); failed != nil {
+				fmt.Printf("❌ %s failed\n", failed.ID)
+			} else {
+				fmt.Println("❌ verify failed")
+			}
+		},
+	}
+
+	final, _, err := l.runRepairAttempts(repairConfig{
+		resolvedName:   resolvedName,
+		agent:          agent,
+		ev:             ev,
+		originalRunDir: originalRunDir,
+		stale:          stale,
+		failedCommands: failedCmds,
+		maxAttempts:    maxAttempts,
+		verifyAfter:    verifyAfter,
+	}, hooks)
+	if err != nil {
+		return err
+	}
+
+	return l.printRepairResult(final, repairDir)
+}
+
+// repairConfig is the resolved input to runRepairAttempts.
+type repairConfig struct {
+	resolvedName   string
+	agent          config.Agent
+	ev             *evidence.Evidence // the failed evidence being repaired
+	originalRunDir string             // run dir of ev (repair artifacts live under it)
+	stale          bool               // ev was stale relative to the working tree
+	failedCommands []string           // ids of failed commands in ev
+	maxAttempts    int
+	verifyAfter    bool // rerun lf verify after each agent attempt
+}
+
+// repairHooks lets callers stream progress without baking output format into the
+// attempt loop. Every field is optional (nil = no output for that event).
+type repairHooks struct {
+	beforeAttempt func(attempt, max int)
+	onAgentError  func(attempt int, err error)
+	onSkipVerify  func(attempt int)
+	beforeVerify  func(attempt int)
+	afterVerify   func(attempt int, passed bool, ev *evidence.Evidence)
+}
+
+// runRepairAttempts runs the agent+verify loop, writing per-attempt artifacts and
+// a repair summary under <originalRunDir>/repair. It returns the final state
+// ("repaired", "exhausted", "agent_error", or "agent_ran_unverified") and the
+// repair directory. Each verify rerun produces its own normal evidence run and
+// advances the latest pointer, so the agent never decides success — only the
+// reverify does. This is the single shared mechanism behind `lf repair` and the
+// repair step of `lf loop`.
+func (l *loaded) runRepairAttempts(rc repairConfig, hooks repairHooks) (string, string, error) {
+	repairDir := filepath.Join(rc.originalRunDir, "repair")
 	if err := os.MkdirAll(repairDir, 0o755); err != nil {
-		return fmt.Errorf("creating repair dir: %w", err)
+		return "", "", fmt.Errorf("creating repair dir: %w", err)
 	}
 
 	sum := repairSummary{
-		OriginalRun:    ev.RunID,
-		FailedCommands: failedCmds,
-		Agent:          resolvedName,
-		Stale:          stale,
+		OriginalRun:    rc.ev.RunID,
+		FailedCommands: rc.failedCommands,
+		Agent:          rc.resolvedName,
+		Stale:          rc.stale,
 	}
 
 	// curEv/curRunDir track the failure being repaired. After a failed verify
 	// rerun they advance to the new evidence so the next prompt uses fresh logs.
-	curEv, curRunDir := ev, originalRunDir
+	curEv, curRunDir := rc.ev, rc.originalRunDir
 	final := "exhausted"
 
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		fmt.Println()
-		fmt.Printf("Attempt %d/%d:\n", attempt, maxAttempts)
+	for attempt := 1; attempt <= rc.maxAttempts; attempt++ {
+		if hooks.beforeAttempt != nil {
+			hooks.beforeAttempt(attempt, rc.maxAttempts)
+		}
 
 		attemptDir := filepath.Join(repairDir, fmt.Sprintf("attempt-%d", attempt))
 		if err := os.MkdirAll(attemptDir, 0o755); err != nil {
-			return fmt.Errorf("creating attempt dir: %w", err)
+			return "", "", fmt.Errorf("creating attempt dir: %w", err)
 		}
 
-		attemptPrompt, perr := l.buildRepairPrompt(curEv, curRunDir, attempt == 1 && stale)
+		attemptPrompt, perr := l.buildRepairPrompt(curEv, curRunDir, attempt == 1 && rc.stale)
 		if perr != nil {
-			return perr
+			return "", "", perr
 		}
 		if err := os.WriteFile(filepath.Join(attemptDir, "prompt.md"), []byte(attemptPrompt), 0o644); err != nil {
-			return fmt.Errorf("saving prompt: %w", err)
+			return "", "", fmt.Errorf("saving prompt: %w", err)
 		}
 
-		fmt.Printf("🤖 running repair agent: %s\n", resolvedName)
-		ar, runErr := repair.RunAgent(resolvedName, agent, l.repoDir, attemptPrompt)
+		ar, runErr := repair.RunAgent(rc.resolvedName, rc.agent, l.repoDir, attemptPrompt)
 		saveAgentArtifacts(attemptDir, ar)
 
 		attemptRec := attemptResult{Attempt: attempt, AgentExit: ar.ExitCode}
 		if runErr != nil {
 			// Could not start the agent at all — surface and stop; nothing was edited.
-			fmt.Fprintf(os.Stderr, "lf repair: %v\n", runErr)
+			if hooks.onAgentError != nil {
+				hooks.onAgentError(attempt, runErr)
+			}
 			attemptRec.Note = "agent failed to start"
 			sum.Attempts = append(sum.Attempts, attemptRec)
 			final = "agent_error"
 			break
 		}
 
-		if !verifyAfter {
-			fmt.Println("(verification skipped: --no-verify)")
+		if !rc.verifyAfter {
+			if hooks.onSkipVerify != nil {
+				hooks.onSkipVerify(attempt)
+			}
 			attemptRec.VerifyResult = "skipped"
 			sum.Attempts = append(sum.Attempts, attemptRec)
 			final = "agent_ran_unverified"
 			break
 		}
 
-		fmt.Println("🔁 running lf verify")
+		if hooks.beforeVerify != nil {
+			hooks.beforeVerify(attempt)
+		}
 		res, verr := runner.Run(l.cfg, runner.Options{
 			RepoDir:     l.repoDir,
 			EvidenceDir: l.evidenceDir,
 			Now:         time.Now(),
 		})
 		if verr != nil {
-			return verr
+			return "", "", verr
 		}
 		attemptRec.VerifyResult = res.Evidence.Result
 		attemptRec.VerifyRun = res.Evidence.RunID
 		sum.Attempts = append(sum.Attempts, attemptRec)
 
-		if res.Evidence.Passed() {
-			fmt.Println("✅ verify passed")
+		passed := res.Evidence.Passed()
+		if hooks.afterVerify != nil {
+			hooks.afterVerify(attempt, passed, res.Evidence)
+		}
+		if passed {
 			final = "repaired"
 			break
-		}
-		if failed := firstFailed(res.Evidence); failed != nil {
-			fmt.Printf("❌ %s failed\n", failed.ID)
-		} else {
-			fmt.Println("❌ verify failed")
 		}
 		// Advance to the fresh failure so the next attempt's prompt is current.
 		curEv, curRunDir = res.Evidence, res.RunDir
@@ -220,10 +302,9 @@ func cmdRepair(args []string) error {
 
 	sum.Final = final
 	if err := writeRepairSummary(repairDir, sum); err != nil {
-		return err
+		return "", "", err
 	}
-
-	return l.printRepairResult(final, repairDir)
+	return final, repairDir, nil
 }
 
 // selectFailedEvidence returns the evidence to repair and its run directory.

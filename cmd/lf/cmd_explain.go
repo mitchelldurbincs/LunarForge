@@ -30,42 +30,9 @@ func cmdExplain(args []string) error {
 		return err
 	}
 
-	gitInfo, err := gitutil.Snapshot(l.repoDir)
+	in, runDir, err := l.explainContext()
 	if err != nil {
 		return err
-	}
-	diff, err := gitutil.Diff(l.repoDir)
-	if err != nil {
-		return err
-	}
-
-	// Load latest evidence if any, and determine freshness. explain is
-	// non-blocking: it works whether evidence is fresh, stale, failed, or absent.
-	in := explain.PromptInput{
-		Project: l.cfg.Project.Name,
-		Branch:  gitInfo.Branch,
-		Head:    gitInfo.Head,
-		Status:  gitInfo.StatusPorcelain,
-		Diff:    diff,
-	}
-
-	var runDir string
-	if ev, dir, lerr := evidence.LoadLatest(l.evidenceDir); lerr == nil {
-		fresh, _, ferr := freshness(l, ev)
-		if ferr != nil {
-			return ferr
-		}
-		in.Evidence = ev
-		in.HasEvidence = true
-		in.EvidenceFresh = fresh
-		runDir = dir
-	} else {
-		// No evidence yet: create a fresh run dir just to hold the explanation.
-		runID := evidence.NewRunID(time.Now())
-		runDir = evidence.RunDir(l.evidenceDir, runID)
-		if err := os.MkdirAll(runDir, 0o755); err != nil {
-			return fmt.Errorf("creating run dir: %w", err)
-		}
 	}
 
 	prompt := explain.BuildPrompt(in)
@@ -107,6 +74,50 @@ func cmdExplain(args []string) error {
 	fmt.Println()
 	fmt.Printf("Explanation saved: %s\n", relPath(l.repoDir, filepath.Join(runDir, "explanation.md")))
 	return nil
+}
+
+// explainContext loads git status/diff plus the latest evidence (with freshness)
+// into an explain.PromptInput, and returns the run directory the explanation
+// should be written into. When no evidence exists yet it creates a fresh run dir
+// to hold the explanation. It is shared by `lf explain` and `lf loop` so both
+// build the explanation prompt identically. explain is non-blocking: it works
+// whether evidence is fresh, stale, failed, or absent.
+func (l *loaded) explainContext() (explain.PromptInput, string, error) {
+	gitInfo, err := gitutil.Snapshot(l.repoDir)
+	if err != nil {
+		return explain.PromptInput{}, "", err
+	}
+	diff, err := gitutil.Diff(l.repoDir)
+	if err != nil {
+		return explain.PromptInput{}, "", err
+	}
+
+	in := explain.PromptInput{
+		Project: l.cfg.Project.Name,
+		Branch:  gitInfo.Branch,
+		Head:    gitInfo.Head,
+		Status:  gitInfo.StatusPorcelain,
+		Diff:    diff,
+	}
+
+	if ev, dir, lerr := evidence.LoadLatest(l.evidenceDir); lerr == nil {
+		fresh, _, ferr := freshness(l, ev)
+		if ferr != nil {
+			return explain.PromptInput{}, "", ferr
+		}
+		in.Evidence = ev
+		in.HasEvidence = true
+		in.EvidenceFresh = fresh
+		return in, dir, nil
+	}
+
+	// No evidence yet: create a fresh run dir just to hold the explanation.
+	runID := evidence.NewRunID(time.Now())
+	runDir := evidence.RunDir(l.evidenceDir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return explain.PromptInput{}, "", fmt.Errorf("creating run dir: %w", err)
+	}
+	return in, runDir, nil
 }
 
 func evidenceBadge(in explain.PromptInput) string {

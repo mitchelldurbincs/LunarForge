@@ -1,0 +1,42 @@
+version: 1
+
+project:
+  name: fixture-loop-basic
+
+verify:
+  commands:
+    - id: contents
+      run: ./scripts/verify.sh
+
+explain:
+  # A fake, dependency-free explain command so the fixture works without
+  # Claude/Codex installed.
+  command: ./scripts/fake-explain.sh
+  args: []
+
+repair:
+  enabled: true
+  max_attempts: 3
+  verify_after_each_attempt: true
+  max_log_chars: 20000
+  # Default to the success fake agent so `lf loop` can demonstrate a repair
+  # end-to-end without Claude/Codex installed. To exercise the BLOCKED path,
+  # switch this to fake_noop (it reads the prompt but changes nothing).
+  agent: fake_success
+
+agents:
+  # Fake, dependency-free repair agents used by the fixture and tests. They read
+  # the generated prompt on stdin (like `claude --print` / `codex exec -`) and
+  # either fix the file or do nothing.
+  fake_success:
+    backend: fake
+    command: ./scripts/fake-repair-success.sh
+    args: []
+  fake_noop:
+    backend: fake
+    command: ./scripts/fake-repair-noop.sh
+    args: []
+
+evidence:
+  dir: .lf/runs
+  require_fresh_diff: true

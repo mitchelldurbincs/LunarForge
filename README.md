@@ -144,17 +144,20 @@ lf install-hooks        # block pushes without fresh passing evidence
 ```bash
 # manually drive Claude Code / Codex; the agent edits files
 git add -A && git commit -m "..."   # commit the change you want to push
-lf verify                           # prove the checks pass for that commit
 
-# if verify failed and you have a repair agent configured:
-lf repair                           # ask the agent for the smallest fix, then reverify
+lf loop                             # verify → repair if needed → explain when verified
 
-lf explain                          # (optional) understand the diff
+# if successful:
+git diff
 git push                            # pre-push hook gates on fresh passing evidence
 ```
 
+`lf loop` runs the standard sequence in one command. The individual commands
+(`lf verify`, `lf repair`, `lf explain`) are still there when you want finer
+control — see [Local loop](#local-loop) for when to use each.
+
 The pre-push hook blocks the push unless fresh, passing evidence exists for the
-exact code being pushed. Commit first, then `lf verify`, so the evidence is tied
+exact code being pushed. Commit first, then run the loop, so the evidence is tied
 to the commit you push.
 
 ---
@@ -599,6 +602,85 @@ tools and deny pushes/destructive commands; for Codex, prefer
 `--sandbox workspace-write`. Avoid `danger-full-access`, `bypassPermissions`, and
 `--dangerously-skip-permissions` unless you deliberately opt in.
 
+### Local loop
+
+`lf loop` chains the existing local commands into one repeatable sequence:
+
+```
+lf loop = verify → repair if needed → explain when verified
+```
+
+It is the one-command version of the manual ritual. Daily usage:
+
+```bash
+# manually drive Claude Code / Codex first; the agent edits files
+git add -A && git commit -m "..."
+
+lf loop
+
+# if successful:
+git diff
+git push
+```
+
+What it does, exactly:
+
+```
+1. Run lf verify.
+2. If verify passes:
+   - run lf explain.
+   - result: ready for review.
+3. If verify fails:
+   - run lf repair (which reverifies after each attempt).
+   - re-check the latest evidence:
+     - if it is now fresh and passing: run lf explain → repaired and ready for review.
+     - if it is still failing: skip explain → blocked.
+```
+
+`lf loop` is **not autonomous feature work**:
+
+```
+It does not decide what to build.
+It does not start from a task description.
+It only checks and repairs the current working tree and .lunarforge.yml.
+```
+
+The agent still does **not** get to declare success. The loop trusts only
+LunarForge evidence: after repair it re-reads the latest evidence and runs
+`lf explain` only when that evidence is fresh and passing. So after a successful
+loop, `lf status --require-fresh-passing` exits `0`; after a blocked loop it
+exits non-zero.
+
+**Flags:**
+
+- `lf loop --no-repair` — run verify; if it fails, stop (strict check, no AI repair).
+- `lf loop --no-explain` — run verify and repair if needed, but skip the explanation.
+- `lf loop --repair-attempts <n>` — override `repair.max_attempts` for this loop.
+- `lf loop --continue-on-failure` — forwarded to verify: run all commands even after one fails.
+- `lf loop --dry-run` — print the steps that would run without running verify, repair, or explain.
+
+**Artifacts.** Each loop writes a small summary that links to (does not duplicate)
+the underlying evidence and repair artifacts:
+
+```
+.lf/loops/<timestamp>/
+  summary.md     # human-readable: verify/repair/explain outcomes + final result
+  loop.json      # machine-readable: timings, attempts, evidence + explanation paths
+```
+
+The verify and repair steps still write their normal `.lf/runs/<timestamp>/`
+evidence; the loop summary just points at the final one.
+
+**Lower-control alternatives.** Reach for the individual commands when you want
+finer control:
+
+```bash
+lf verify     # only want proof the checks pass
+lf repair     # a gate already failed and you want the agent to fix it
+lf explain    # want a review summary of the current diff
+lf loop       # want the standard local sequence in one command
+```
+
 ### `lf install-hooks`
 
 Installs a **pre-push** hook (not pre-commit — pre-commit is too noisy for WIP
@@ -690,6 +772,37 @@ lf verify
 lf repair --agent fake_noop --attempts 2   # ❌ not repaired after 2 attempts
 ```
 
+### Loop fixture
+
+A third fixture under
+[`examples/fixture-loop-basic/`](examples/fixture-loop-basic/) demonstrates
+`lf loop` end-to-end with **no Claude or Codex required**. Unlike the repair
+fixture it ships **passing**, so the immediate-success path works out of the box;
+break `src/hello.txt` to exercise repair and the blocked path.
+
+```bash
+# 1) Immediate success: verify passes, repair skipped, explain runs.
+cp -r examples/fixture-loop-basic /tmp/lf-loop-pass && cd /tmp/lf-loop-pass
+git init && git add . && git commit -m "fixture"
+lf loop                              # ✅ ready for review
+lf status --require-fresh-passing    # exits 0
+
+# 2) Repair success: break the file, let the fake agent fix it.
+cp -r examples/fixture-loop-basic /tmp/lf-loop-repair && cd /tmp/lf-loop-repair
+git init && git add . && git commit -m "fixture"
+echo broken > src/hello.txt
+lf loop                              # ❌ verify → repair → ✅ repaired and ready for review
+lf status --require-fresh-passing    # exits 0
+
+# 3) Blocked: switch to the no-op agent so repair can't fix it.
+cp -r examples/fixture-loop-basic /tmp/lf-loop-block && cd /tmp/lf-loop-block
+sed -i 's/agent: fake_success/agent: fake_noop/' .lunarforge.yml
+git init && git add . && git commit -m "fixture"
+echo broken > src/hello.txt
+lf loop --repair-attempts 2          # ❌ blocked, explain skipped
+lf status --require-fresh-passing    # exits non-zero
+```
+
 ---
 
 ## Roadmap
@@ -700,13 +813,17 @@ without a rewrite:
 
 - Remote backup via GitHub Actions (the remote mirror of `lf verify`).
 - Richer explain modes and model-per-step selection.
-- Autonomous implementation from vague tasks (`lf repair` stays narrow — failed
-  gates only — and does not do this).
+- Editable workflows beyond the fixed `lf loop` sequence (`lf loop` stays a
+  single, non-autonomous chain of the existing local commands and does not do
+  this yet).
+- Autonomous implementation from vague tasks (`lf repair` and `lf loop` stay
+  narrow — failed gates and the current working tree only — and do not do this).
 - Integrations (issue trackers, multi-agent orchestration).
 - Remote server / dashboard / multi-machine workers.
 
 The principle stays the same: **local verification + evidence + explanation,
-done well, with a narrow, opt-in repair of failed gates.**
+done well, with a narrow, opt-in repair of failed gates, and a single boring
+loop that chains them.**
 
 ---
 
@@ -722,6 +839,8 @@ internal/
   explain/              # builds the prompt, invokes the explain agent
   repair/               # builds the repair prompt, invokes the repair agent
   hooks/                # installs the pre-push hook
+cmd/lf/cmd_loop.go      # `lf loop`: composes verify → repair → explain
+cmd/lf/loop_summary.go  # loop summary artifact (.lf/loops/<ts>/)
 examples/
   node/.lunarforge.yml
   cpp/.lunarforge.yml
@@ -740,6 +859,14 @@ examples/
     scripts/verify.ps1
     scripts/fake-repair-success.sh
     scripts/fake-repair-noop.sh
+  fixture-loop-basic/       # self-contained `lf loop` fixture (fake agents)
+    .lunarforge.yml
+    src/hello.txt           # ships PASSING; break it to exercise repair/blocked
+    scripts/verify.sh
+    scripts/verify.ps1
+    scripts/fake-repair-success.sh
+    scripts/fake-repair-noop.sh
+    scripts/fake-explain.sh
 ```
 
 ## Development
