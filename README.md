@@ -26,8 +26,14 @@ lf verify             = local proof
 lf status             = fresh/stale proof check
 pre-push hook         = local enforcement before pushing
 lf explain            = diff understanding
-GitHub Actions        = remote backup later
+GitHub Actions        = remote backup (authoritative for PRs)
 ```
+
+The **local** loop (`lf verify` → `lf status` → pre-push hook) is fast and
+convenient, but a local hook can be bypassed with `git push --no-verify`. The
+**remote** loop (GitHub Actions running `lf ci`) re-runs the *same*
+`.lunarforge.yml` verify commands on the PR, so branch protection can make the
+gate authoritative — something a local CLI flag can't wave past.
 
 LunarForge does **not** replace Claude Code, Codex, or manual driving. It is the
 **local evidence layer that runs after an AI edits your code**: it proves the
@@ -55,21 +61,23 @@ Reminders ask. LunarForge verifies.
 
 ## What LunarForge is
 
-A small, maintainable CLI (`lf`) that does four things well:
+A small, maintainable CLI (`lf`) that does these things well:
 
 1. **`lf verify`** — runs your configured commands and records evidence.
 2. **`lf status`** — tells you if the latest evidence is fresh and passing.
 3. **`lf explain`** — explains the current diff using git + the latest evidence.
 4. **`lf install-hooks`** — installs a pre-push gate.
+5. **`lf ci`** — runs the same verify commands in CI (the remote mirror).
+6. **`lf gen-actions`** — generates a GitHub Actions workflow that runs `lf ci`.
 
 ## What LunarForge is *not* (yet)
 
 It is intentionally **not** an agent framework. It does **not** do autonomous
 implementation, repair loops, multi-agent workflows, remote servers,
-dashboards, GitHub Actions generation, or multi-machine routing. See
-[Roadmap](#roadmap).
+dashboards, or multi-machine routing. See [Roadmap](#roadmap).
 
-The MVP is exactly: **local verification + evidence + explanation.**
+The core is: **local verification + evidence + explanation**, plus a thin
+**remote mirror** of the same checks in GitHub Actions.
 
 ---
 
@@ -478,13 +486,154 @@ The hook is safe about existing hooks:
 - It is a POSIX `sh` script and is made executable on Unix-like systems. On
   Windows, Git for Windows ships its own `sh`, so the hook runs there too.
 
-#### Hooks are local — mirror them remotely later
+#### Hooks are local — GitHub Actions is the remote mirror
 
 A git pre-push hook is a **local** convenience and can be bypassed with
-`git push --no-verify`. It is not a server-side guarantee. The intended end
-state is to mirror the same `.lunarforge.yml` checks in **GitHub Actions** (or
-another CI) so the remote enforces what the local hook encourages. That remote
-mirror is on the [roadmap](#roadmap) and intentionally not part of this MVP.
+`git push --no-verify`. It is not a server-side guarantee. The remote mirror —
+**GitHub Actions** running the same `.lunarforge.yml` checks — is what makes the
+gate authoritative. See [GitHub Actions mirror](#github-actions-mirror).
+
+---
+
+## GitHub Actions mirror
+
+The local hook is **bypassable-but-useful**; GitHub Actions is **authoritative**.
+The remote workflow runs `lf ci`, which executes the *same* `verify.commands`
+from `.lunarforge.yml` — so there's a single source of truth and no drift
+between local and remote.
+
+```
+AGENTS.md / CLAUDE.md = reminders
+scripts/verify.sh     = repo ritual
+lf verify             = local proof
+lf status             = fresh/stale proof check
+pre-push hook         = local enforcement (bypassable with --no-verify)
+GitHub Actions        = remote backup (authoritative for PRs/branches)
+```
+
+The mental model for the three verify-shaped commands:
+
+```
+lf verify = local proof for the current working tree
+lf status = is the latest local proof still valid?
+lf ci     = remote proof for the current CI checkout
+```
+
+### Do not duplicate your commands
+
+The workflow **delegates** to LunarForge instead of re-listing your build/test
+commands:
+
+```yaml
+# ✅ Good — one source of truth
+- run: ./lf ci
+```
+
+```yaml
+# ❌ Bad — drifts from .lunarforge.yml
+- run: npm run lint
+- run: npm test
+- run: npm run build
+```
+
+### `lf ci`
+
+`lf ci` is the CI-friendly verification command. It loads `.lunarforge.yml`,
+confirms it's in a git repo, runs the configured `verify.commands`, and saves
+evidence under `.lf/runs/<timestamp>/` (so CI can upload it as an artifact).
+It exits `0` when all required commands pass and non-zero when any fails.
+
+Unlike `lf verify`, **`lf ci` does not care about pre-existing fresh local
+evidence** — in CI the current checkout *is* the source of truth, so it just
+runs the commands. When `GITHUB_ACTIONS=true`, it also emits an `::error::`
+annotation on failure and writes a short result table to the job summary.
+
+```
+LunarForge CI
+
+✅ lint passed       1.2s
+✅ test passed       5.4s
+
+Result:
+✅ CI verification passed
+
+Evidence:
+.lf/runs/2026-06-30T14-22-10/evidence.json
+```
+
+### `lf gen-actions`
+
+Generates `.github/workflows/lunarforge.yml`:
+
+```bash
+lf gen-actions                                  # default path
+lf gen-actions --output .github/workflows/x.yml # custom path
+lf gen-actions --force                          # overwrite an existing file
+```
+
+It will **not** overwrite an existing workflow unless `--force` is passed, and
+prints the path plus next steps. The generated workflow:
+
+- runs on pull requests and pushes to `main`,
+- uses `concurrency` to cancel superseded runs,
+- uses minimal `permissions: contents: read`,
+- checks out the repo, builds `lf` from `./cmd/lf`, runs `./lf ci`,
+- uploads `.lf/runs/**` as an artifact (`if: always()`).
+
+### Recommended setup
+
+```bash
+lf gen-actions
+git add .github/workflows/lunarforge.yml
+git commit -m "add LunarForge CI"
+git push
+```
+
+Then, in **GitHub → Settings → Branches → Branch protection rules**, require the
+**LunarForge / Verify** check to pass before merging. Local hooks can be skipped
+with `git push --no-verify`; a required GitHub check **cannot** be bypassed by a
+local CLI flag.
+
+### Important limitation: setup is your job
+
+The generated workflow is only a **remote mirror of your verify commands**. It
+does **not** install your project's dependencies or toolchain:
+
+- Node repos still need Node set up + `npm ci`.
+- Rust repos still need the Rust toolchain.
+- C++ repos may need CMake / a compiler.
+- Windows desktop repos may need `runs-on: windows-latest`.
+
+You have two options:
+
+1. **Edit the generated workflow** and add the setup steps you need (see the
+   ready-to-copy examples in [`examples/github-actions/`](examples/github-actions/)).
+2. **Use `ci.setup_commands`** in `.lunarforge.yml` to have a simple "Project
+   setup" step generated for you:
+
+   ```yaml
+   ci:
+     setup_commands:
+       - npm ci
+   ```
+
+Optional CI config (all fields are optional; defaults are shown):
+
+```yaml
+ci:
+  github_actions:
+    workflow_name: LunarForge   # name: of the workflow
+    runs_on: ubuntu-latest      # runner
+    timeout_minutes: 30         # job timeout
+    upload_artifacts: true      # upload .lf/runs/** as an artifact
+  setup_commands: []            # commands run before `lf ci`
+```
+
+Example workflows for common stacks:
+
+- [`lunarforge-basic.yml`](examples/github-actions/lunarforge-basic.yml) — self-contained (matches `lf gen-actions`).
+- [`lunarforge-node.yml`](examples/github-actions/lunarforge-node.yml) — Node setup + `npm ci`.
+- [`lunarforge-windows.yml`](examples/github-actions/lunarforge-windows.yml) — `windows-latest` for C++/desktop.
 
 ---
 
@@ -530,17 +679,16 @@ git push        # now allowed
 ## Roadmap
 
 The MVP is deliberately small. The code is structured (config / gitutil /
-evidence / runner / explain / hooks) so these can be added later without a
-rewrite:
+evidence / runner / explain / hooks / actions) so these can be added later
+without a rewrite:
 
-- Remote backup via GitHub Actions (the remote mirror of `lf verify`).
 - Richer explain modes and model-per-step selection.
 - Autonomous implementation / repair loops.
 - Integrations (issue trackers, multi-agent orchestration).
 - Remote server / dashboard / multi-machine workers.
 
 None of these exist yet, and that's the point: **local verification + evidence
-+ explanation, done well, first.**
++ explanation + a thin remote mirror, done well, first.**
 
 ---
 
@@ -555,11 +703,13 @@ internal/
   runner/               # runs verify commands, captures output, writes summary
   explain/              # builds the prompt, invokes the explain agent
   hooks/                # installs the pre-push hook
+  actions/              # generates the GitHub Actions workflow (lf gen-actions)
 examples/
   node/.lunarforge.yml
   cpp/.lunarforge.yml
   scripts/verify.sh
   scripts/verify.ps1
+  github-actions/           # ready-to-copy CI workflows (basic / node / windows)
   fixture-basic/            # self-contained end-to-end fixture (no external deps)
     .lunarforge.yml
     src/hello.txt
