@@ -1,0 +1,27 @@
+version: 1
+
+project:
+  name: node-app
+
+verify:
+  commands:
+    - id: lint
+      run: npm run lint
+    - id: typecheck
+      run: npm run typecheck
+    - id: test
+      run: npm test
+    - id: build
+      run: npm run build
+
+explain:
+  agent: claude
+  command: claude
+  args:
+    - --print
+    - --permission-mode
+    - plan
+
+evidence:
+  dir: .lf/runs
+  require_fresh_diff: true

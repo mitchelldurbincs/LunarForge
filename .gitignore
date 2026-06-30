@@ -1,0 +1,12 @@
+# Compiled binaries
+/lf
+/lf.exe
+/dist/
+
+# LunarForge local evidence (when running lf inside this repo)
+/.lf/runs/
+/.lf/latest
+
+# Go
+*.test
+*.out
