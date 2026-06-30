@@ -41,8 +41,9 @@ func cmdInstallHooks(args []string) error {
 		fmt.Println("   Review it and merge any logic you still need.")
 	}
 	fmt.Println()
-	fmt.Println("The hook runs `lf status --strict` before each push and blocks the")
-	fmt.Println("push unless there is fresh, passing evidence for the current diff.")
+	fmt.Println("The hook runs `lf status --require-fresh-passing` before each push and")
+	fmt.Println("blocks the push unless there is fresh, passing evidence for the current")
+	fmt.Println("diff. It only reads saved evidence — it does not re-run your tests.")
 	fmt.Println("Bypass once with: git push --no-verify")
 	return nil
 }

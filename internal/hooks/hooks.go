@@ -15,20 +15,24 @@ import (
 // marker identifies hooks managed by LunarForge.
 const marker = "# >>> LunarForge managed pre-push hook >>>"
 
-// prePushScript is the pre-push hook body. It runs `lf status --strict`, which
-// exits non-zero unless there is fresh passing evidence for the current diff.
+// prePushScript is the pre-push hook body. It runs
+// `lf status --require-fresh-passing`, which exits non-zero unless there is
+// fresh, passing evidence for the current diff. It does NOT re-run the verify
+// commands, so the gate is fast.
 const prePushScript = `#!/bin/sh
 ` + marker + `
 # Installed by: lf install-hooks
 # Blocks a push unless LunarForge has fresh, passing evidence for the current diff.
+# This only reads saved evidence; it does not re-run your tests.
 # To bypass once:  git push --no-verify
 
 if ! command -v lf >/dev/null 2>&1; then
-  echo "LunarForge: 'lf' not found on PATH; skipping pre-push gate." >&2
-  exit 0
+  echo "LunarForge pre-push gate: 'lf' not found on PATH." >&2
+  echo "Install LunarForge, or bypass once with: git push --no-verify" >&2
+  exit 1
 fi
 
-if ! lf status --strict; then
+if ! lf status --require-fresh-passing; then
   echo "" >&2
   echo "LunarForge pre-push gate failed: no fresh passing evidence." >&2
   echo "Run 'lf verify' and try again, or push with --no-verify to bypass." >&2

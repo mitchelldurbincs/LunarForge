@@ -37,7 +37,7 @@ func BuildPrompt(in PromptInput) string {
 	b.WriteString("2. Files changed — list each changed file.\n")
 	b.WriteString("3. Why each file changed — one short explanation per file.\n")
 	b.WriteString("4. Verification evidence — what was run and whether it passed.\n")
-	b.WriteString("5. Evidence freshness — state clearly whether the evidence is FRESH or STALE for the current diff, and what that means.\n")
+	b.WriteString("5. Evidence freshness — state clearly whether the evidence is FRESH, STALE, FAILED, or MISSING for the current diff, and what that means.\n")
 	b.WriteString("6. Risks — what could go wrong or deserves scrutiny.\n")
 	b.WriteString("7. Manual review suggestions — concrete things the human should check by hand.\n\n")
 	b.WriteString("Do not invent changes that are not in the diff. If the diff is empty, say so.\n\n")
@@ -60,9 +60,10 @@ func BuildPrompt(in PromptInput) string {
 
 	b.WriteString("=== VERIFICATION EVIDENCE ===\n")
 	if !in.HasEvidence || in.Evidence == nil {
-		b.WriteString("No verification evidence exists. Run `lf verify` first.\n")
+		b.WriteString("Status: MISSING — no verification evidence exists. Run `lf verify` first.\n")
 	} else {
 		ev := in.Evidence
+		fmt.Fprintf(&b, "Status: %s\n", evidenceStatus(in))
 		fmt.Fprintf(&b, "Run: %s\n", ev.RunID)
 		fmt.Fprintf(&b, "Overall result: %s\n", ev.Result)
 		fmt.Fprintf(&b, "Evidence diff hash: %s\n", ev.DiffHash)
@@ -97,27 +98,55 @@ func orNone(s string) string {
 	return s
 }
 
-// Run invokes the configured explain command with the prompt as the final
-// argument, using an exec-style argument array (no shell). It returns the
-// explanation text. The prompt is always written to <runDir>/explain-prompt.md
-// so it is preserved even if the command fails or is not installed.
-func Run(cfg *config.Config, runDir, prompt string) (string, error) {
+// evidenceStatus reduces the evidence state to a single word for the prompt.
+func evidenceStatus(in PromptInput) string {
+	switch {
+	case !in.HasEvidence || in.Evidence == nil:
+		return "MISSING"
+	case !in.Evidence.Passed():
+		return "FAILED"
+	case !in.EvidenceFresh:
+		return "STALE"
+	default:
+		return "FRESH (passing)"
+	}
+}
+
+// SavePrompt writes the prompt to <runDir>/explain-prompt.md and returns its
+// path. It is always safe to call, even when the explain command is unavailable.
+func SavePrompt(runDir, prompt string) (string, error) {
 	promptPath := filepath.Join(runDir, "explain-prompt.md")
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
 		return "", fmt.Errorf("saving prompt: %w", err)
+	}
+	return promptPath, nil
+}
+
+// Run invokes the configured explain command with the prompt as the final
+// argument, using an exec-style argument array (no shell). It returns the
+// explanation text. The prompt is always written to <runDir>/explain-prompt.md
+// first, so it is preserved even if the command fails or is not installed.
+//
+// The command runs with the working directory set to repoDir so that relative
+// command paths and arguments resolve against the repo, not the run directory.
+func Run(cfg *config.Config, repoDir, runDir, prompt string) (string, error) {
+	promptPath, err := SavePrompt(runDir, prompt)
+	if err != nil {
+		return "", err
 	}
 
 	command := cfg.Explain.Command
 	if command == "" {
 		return "", fmt.Errorf("explain.command is not configured; prompt saved to %s", promptPath)
 	}
-	if _, err := exec.LookPath(command); err != nil {
-		return "", fmt.Errorf("explain command %q not found on PATH: %w (prompt saved to %s)", command, err, promptPath)
+	resolved, err := resolveCommand(repoDir, command)
+	if err != nil {
+		return "", fmt.Errorf("%w (prompt saved to %s)", err, promptPath)
 	}
 
 	args := append(append([]string{}, cfg.Explain.Args...), prompt)
-	cmd := exec.Command(command, args...)
-	cmd.Dir = runDir
+	cmd := exec.Command(resolved, args...)
+	cmd.Dir = repoDir
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -132,4 +161,21 @@ func Run(cfg *config.Config, runDir, prompt string) (string, error) {
 		return "", fmt.Errorf("saving explanation: %w", err)
 	}
 	return explanation, nil
+}
+
+// resolveCommand turns the configured command into an executable path. A command
+// containing a path separator is treated as repo-relative (e.g.
+// "./scripts/fake-explain.sh"); a bare name is looked up on PATH (e.g. "claude").
+func resolveCommand(repoDir, command string) (string, error) {
+	if strings.ContainsAny(command, "/\\") && !filepath.IsAbs(command) {
+		candidate := filepath.Join(repoDir, command)
+		if _, err := os.Stat(candidate); err != nil {
+			return "", fmt.Errorf("explain command %q not found at %s: %w", command, candidate, err)
+		}
+		return candidate, nil
+	}
+	if _, err := exec.LookPath(command); err != nil {
+		return "", fmt.Errorf("explain command %q not found on PATH: %w", command, err)
+	}
+	return command, nil
 }

@@ -50,7 +50,8 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	diffHash, err := gitutil.DiffHash(opts.RepoDir)
+	excludes := evidence.ArtifactExcludes(opts.RepoDir, opts.EvidenceDir)
+	diffHash, err := gitutil.DiffHash(opts.RepoDir, excludes...)
 	if err != nil {
 		return nil, err
 	}
