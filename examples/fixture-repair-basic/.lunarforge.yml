@@ -1,0 +1,61 @@
+version: 1
+
+project:
+  name: fixture-repair-basic
+
+verify:
+  commands:
+    - id: contents
+      run: ./scripts/verify.sh
+
+explain:
+  # A fake, dependency-free explain command so the fixture works without
+  # Claude/Codex installed.
+  command: ./scripts/fake-explain.sh
+  args: []
+
+repair:
+  enabled: true
+  max_attempts: 3
+  verify_after_each_attempt: true
+  max_log_chars: 20000
+  # Default to the success fake agent so the fixture demonstrates a repair
+  # end-to-end without Claude/Codex installed. Override with --agent.
+  agent: fake_success
+
+agents:
+  # Fake, dependency-free repair agents used by the fixture and tests. They read
+  # the generated prompt on stdin (like `claude --print` / `codex exec -`) and
+  # either fix the file, do nothing, or fail.
+  fake_success:
+    backend: fake
+    command: ./scripts/fake-repair-success.sh
+    args: []
+  fake_noop:
+    backend: fake
+    command: ./scripts/fake-repair-noop.sh
+    args: []
+
+  # Real backends, for reference. Uncomment and select with `repair.agent` or
+  # `--agent`. Exact flags may evolve — edit args to match your installed CLI.
+  #
+  # claude_repair:
+  #   backend: claude_code
+  #   command: claude
+  #   args:
+  #     - --print
+  #     - --permission-mode
+  #     - acceptEdits
+  #
+  # codex_repair:
+  #   backend: codex
+  #   command: codex
+  #   args:
+  #     - exec
+  #     - --sandbox
+  #     - workspace-write
+  #     - "-"
+
+evidence:
+  dir: .lf/runs
+  require_fresh_diff: true

@@ -28,6 +28,8 @@ func main() {
 		err = cmdVerify(args)
 	case "explain":
 		err = cmdExplain(args)
+	case "repair":
+		err = cmdRepair(args)
 	case "status":
 		err = cmdStatus(args)
 	case "install-hooks":
@@ -83,6 +85,7 @@ Commands:
   verify          Run verify commands and save evidence tied to the current diff
   status          Show whether the latest evidence is fresh and passing
   explain         Explain the current diff using git + the latest evidence
+  repair          Ask a configured AI agent to fix failed verification, then reverify
   install-hooks   Install a pre-push hook that requires fresh passing evidence
   version         Print the version
   help            Show this help

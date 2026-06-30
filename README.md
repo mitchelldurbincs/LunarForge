@@ -55,21 +55,27 @@ Reminders ask. LunarForge verifies.
 
 ## What LunarForge is
 
-A small, maintainable CLI (`lf`) that does four things well:
+A small, maintainable CLI (`lf`) that does a few things well:
 
 1. **`lf verify`** — runs your configured commands and records evidence.
 2. **`lf status`** — tells you if the latest evidence is fresh and passing.
 3. **`lf explain`** — explains the current diff using git + the latest evidence.
-4. **`lf install-hooks`** — installs a pre-push gate.
+4. **`lf repair`** — when verification **failed**, asks a configured AI agent for
+   the smallest safe fix and reruns `lf verify`. The agent never declares
+   success — only `lf verify` can. See [`lf repair` — repair failed gates](#lf-repair).
+5. **`lf install-hooks`** — installs a pre-push gate.
 
 ## What LunarForge is *not* (yet)
 
 It is intentionally **not** an agent framework. It does **not** do autonomous
-implementation, repair loops, multi-agent workflows, remote servers,
-dashboards, GitHub Actions generation, or multi-machine routing. See
-[Roadmap](#roadmap).
+implementation from vague tasks, `lf run "build feature"`, multi-agent
+workflows, remote servers, dashboards, GitHub Actions generation, or
+multi-machine routing. `lf repair` is deliberately narrow: it only reacts to a
+**failed** verification run and tries to make that exact gate pass — it does not
+do open-ended feature work. See [Roadmap](#roadmap).
 
-The MVP is exactly: **local verification + evidence + explanation.**
+The core is: **local verification + evidence + explanation, with an opt-in,
+narrow repair of failed gates.**
 
 ---
 
@@ -139,6 +145,10 @@ lf install-hooks        # block pushes without fresh passing evidence
 # manually drive Claude Code / Codex; the agent edits files
 git add -A && git commit -m "..."   # commit the change you want to push
 lf verify                           # prove the checks pass for that commit
+
+# if verify failed and you have a repair agent configured:
+lf repair                           # ask the agent for the smallest fix, then reverify
+
 lf explain                          # (optional) understand the diff
 git push                            # pre-push hook gates on fresh passing evidence
 ```
@@ -461,6 +471,134 @@ repo-relative path (e.g. `./scripts/fake-explain.sh`); relative commands resolve
 against the repo root. This makes it easy to wire a fake explain script in CI or
 fixtures.
 
+### `lf repair`
+
+**Repair failed gates.** When `lf verify` has **failed**, `lf repair` hands the failure to a configured
+AI agent and asks for the **smallest safe fix**, then reruns `lf verify`. It is
+not autonomous feature work — it only ever responds to **failed LunarForge
+verification evidence**, and the agent does **not** get to declare success. Only
+`lf verify` can.
+
+What it does:
+
+```
+1. Load .lunarforge.yml and the latest evidence.
+2. Refuse if there is no evidence, or if the latest evidence passed.
+3. Identify the failed command(s) and read their stdout/stderr logs.
+4. Read current git status and git diff.
+5. Build a strict repair prompt (saved under the run dir).
+6. Invoke the configured repair agent (prompt delivered on stdin).
+7. Save the agent's stdout/stderr/result.
+8. Rerun `lf verify`.
+9. Stop when verify passes, or after max attempts.
+```
+
+The prompt is strict by construction: make the smallest safe diff; do not start
+unrelated refactors; do not weaken or delete tests; do not skip the failing
+command; do not edit `.lunarforge.yml` unless the failure is clearly a config
+problem; do not push/commit/branch; do not edit generated/vendor/secret paths;
+and after editing, do **not** claim success.
+
+Flags (priority order):
+
+- `lf repair` — repair the latest failed run.
+- `lf repair --dry-run` — show the plan (agent command + where artifacts would
+  be written) without invoking the agent or running verify.
+- `lf repair --print-prompt` — print the generated prompt and exit.
+- `lf repair --attempts <n>` — override `repair.max_attempts`.
+- `lf repair --agent <name>` — pick an agent from the `agents:` map.
+- `lf repair --from-latest-failed` — repair the most recent **failed** run even
+  if a newer passing run exists.
+- `lf repair --no-verify` — invoke the agent once without rerunning verify
+  (cannot confirm a fix; for debugging the agent wiring).
+
+If the latest failed evidence is **stale** (the working tree changed since that
+run), repair still runs but prints a warning and notes it in the prompt.
+
+#### Artifacts
+
+Each attempt writes under the original failed run's directory:
+
+```
+.lf/runs/<original-failed-run>/repair/
+  attempt-1/
+    prompt.md          # the exact prompt sent to the agent
+    agent.stdout.txt
+    agent.stderr.txt
+    result.json        # agent name/command/args/exit code
+  attempt-2/ ...
+  summary.md           # original run, failed commands, attempts, final result
+```
+
+Each verify rerun creates its own normal `.lf/runs/<timestamp>/` evidence.
+
+#### Config
+
+Repair is configured in `.lunarforge.yml`. The agent abstraction is small: a
+name, an informational backend label, a command, and fixed args. LunarForge
+writes the generated prompt to the command's **stdin**, which both
+`claude --print` and `codex exec -` accept.
+
+```yaml
+repair:
+  enabled: true
+  max_attempts: 3
+  verify_after_each_attempt: true
+  max_log_chars: 20000        # truncate inlined logs; full logs stay on disk
+  agent: claude_repair        # default agent (override with --agent)
+
+agents:
+  claude_repair:
+    backend: claude_code
+    command: claude
+    args:
+      - --print
+      - --permission-mode
+      - acceptEdits
+
+  codex_repair:
+    backend: codex
+    command: codex
+    args:
+      - exec
+      - --sandbox
+      - workspace-write
+      - "-"                   # read the prompt from stdin
+```
+
+**Claude Code** (researched against CLI `2.1.196`): `--print` enables
+non-interactive mode and reads the prompt from stdin; `--permission-mode
+acceptEdits` auto-applies file edits. Note the older `--max-turns` flag has been
+**removed** from current Claude Code — the current spend guard is
+`--max-budget-usd`. To restrict tools, use `--tools Read,Edit,Bash` (limits which
+built-in tools exist), `--allowedTools` (auto-approve specific calls without
+prompting, e.g. `--allowedTools "Bash(go build:*)"`), and `--disallowedTools`
+(deny scoped calls, e.g. `--disallowedTools "Bash(git push:*)"`). These three are
+distinct:
+
+```
+--tools           restrict which tools are available at all
+--allowedTools    allow selected tool calls without prompting
+--disallowedTools deny tools or scoped tool calls
+```
+
+**Codex** (`codex exec`): the safe default for repairs is
+`--sandbox workspace-write` (edit files in the workspace, but not the wider
+host). The trailing `-` makes `codex exec` read the prompt from stdin. **Do not**
+use `--sandbox danger-full-access` for repairs.
+
+Exact flags evolve — run `claude --help` / `codex exec --help` and edit `args`
+directly to match your installed CLI.
+
+#### Safety
+
+This is **not** a sandbox. LunarForge controls the prompt and reruns
+verification, but the repair agent still runs **on your machine with whatever
+permissions you give it**. Prefer a conservative agent: for Claude, restrict
+tools and deny pushes/destructive commands; for Codex, prefer
+`--sandbox workspace-write`. Avoid `danger-full-access`, `bypassPermissions`, and
+`--dangerously-skip-permissions` unless you deliberately opt in.
+
 ### `lf install-hooks`
 
 Installs a **pre-push** hook (not pre-commit — pre-commit is too noisy for WIP
@@ -525,22 +663,50 @@ lf verify       # re-prove for the new commit
 git push        # now allowed
 ```
 
+### Repair fixture
+
+A second fixture under
+[`examples/fixture-repair-basic/`](examples/fixture-repair-basic/) demonstrates
+`lf repair` end-to-end with **no Claude or Codex required**. It ships in a
+**failing** state (`src/hello.txt` contains `broken`, but verify expects
+`hello lunarforge`) and configures fake repair agents: `fake_success` (edits the
+file so verify passes) and `fake_noop` (changes nothing).
+
+```bash
+cp -r examples/fixture-repair-basic /tmp/lf-repair-demo && cd /tmp/lf-repair-demo
+git init
+git add .
+git commit -m "fixture"
+
+lf verify                 # ❌ contents failed → failed evidence saved
+lf repair --dry-run       # shows the plan + agent command, writes nothing
+lf repair                 # fake agent fixes the file, verify reruns → ✅ passed
+lf status --require-fresh-passing   # exits 0
+
+# Exhaustion path with the no-op agent:
+git checkout src/hello.txt && printf 'broken\n' > src/hello.txt
+git commit -am break
+lf verify
+lf repair --agent fake_noop --attempts 2   # ❌ not repaired after 2 attempts
+```
+
 ---
 
 ## Roadmap
 
-The MVP is deliberately small. The code is structured (config / gitutil /
-evidence / runner / explain / hooks) so these can be added later without a
-rewrite:
+The core is deliberately small. The code is structured (config / gitutil /
+evidence / runner / explain / repair / hooks) so these can be added later
+without a rewrite:
 
 - Remote backup via GitHub Actions (the remote mirror of `lf verify`).
 - Richer explain modes and model-per-step selection.
-- Autonomous implementation / repair loops.
+- Autonomous implementation from vague tasks (`lf repair` stays narrow — failed
+  gates only — and does not do this).
 - Integrations (issue trackers, multi-agent orchestration).
 - Remote server / dashboard / multi-machine workers.
 
-None of these exist yet, and that's the point: **local verification + evidence
-+ explanation, done well, first.**
+The principle stays the same: **local verification + evidence + explanation,
+done well, with a narrow, opt-in repair of failed gates.**
 
 ---
 
@@ -554,6 +720,7 @@ internal/
   evidence/             # evidence.json shape, read/write, latest pointer
   runner/               # runs verify commands, captures output, writes summary
   explain/              # builds the prompt, invokes the explain agent
+  repair/               # builds the repair prompt, invokes the repair agent
   hooks/                # installs the pre-push hook
 examples/
   node/.lunarforge.yml
@@ -566,6 +733,13 @@ examples/
     scripts/verify.sh
     scripts/verify.ps1
     scripts/fake-explain.sh
+  fixture-repair-basic/     # self-contained `lf repair` fixture (fake agents)
+    .lunarforge.yml
+    src/hello.txt           # ships "broken" so verify fails
+    scripts/verify.sh
+    scripts/verify.ps1
+    scripts/fake-repair-success.sh
+    scripts/fake-repair-noop.sh
 ```
 
 ## Development
