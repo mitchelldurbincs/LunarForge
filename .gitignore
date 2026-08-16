@@ -3,9 +3,8 @@
 /lf.exe
 /dist/
 
-# LunarForge local evidence (when running lf inside this repo)
-/.lf/runs/
-/.lf/latest
+# LunarForge local artifacts (this repo gates itself with lf)
+/.lf/
 
 # Go
 *.test
