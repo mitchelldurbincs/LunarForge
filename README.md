@@ -811,7 +811,9 @@ The core is deliberately small. The code is structured (config / gitutil /
 evidence / runner / explain / repair / hooks) so these can be added later
 without a rewrite:
 
-- Remote backup via GitHub Actions (the remote mirror of `lf verify`).
+- Generating a GitHub Actions workflow for *your* repo (the remote mirror of
+  `lf verify`). LunarForge's own CI exists, but `lf` does not yet write one for
+  the repos it gates.
 - Richer explain modes and model-per-step selection.
 - Editable workflows beyond the fixed `lf loop` sequence (`lf loop` stays a
   single, non-autonomous chain of the existing local commands and does not do
@@ -830,6 +832,10 @@ loop that chains them.**
 ## Project layout
 
 ```
+.lunarforge.yml         # LunarForge's own config — this repo gates itself
+scripts/verify.sh       # the repo's real ritual: gofmt + vet + build + test
+scripts/verify.ps1      # Windows twin of the above
+.github/workflows/ci.yml # remote backup: runs the same ritual on Linux + Windows
 cmd/lf/                 # CLI entrypoint and per-command files
 internal/
   config/               # .lunarforge.yml loading + validation + starter template
@@ -871,8 +877,23 @@ examples/
 
 ## Development
 
+LunarForge gates itself with LunarForge. The repo ships its own
+`.lunarforge.yml` and `scripts/verify.sh`, so the ritual you run locally is the
+ritual CI runs:
+
 ```bash
-go build ./...
-go test ./...
-gofmt -l .
+./scripts/verify.sh      # gofmt + go vet + go build + go test
 ```
+
+Or drive it through the tool itself, once `lf` is on your `PATH`:
+
+```bash
+go build -o lf ./cmd/lf
+./lf verify              # runs scripts/verify.sh, records evidence in .lf/runs/
+./lf status              # fresh + passing?
+./lf install-hooks       # gate your own pushes on it
+```
+
+`.github/workflows/ci.yml` runs the same script on Linux and its PowerShell twin
+(`scripts/verify.ps1`) on Windows, so the cross-platform claim is checked rather
+than asserted. The remote workflow is the backup; the local gate is the point.

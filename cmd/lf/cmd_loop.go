@@ -51,8 +51,8 @@ func cmdLoop(args []string) error {
 
 	started := time.Now()
 	sum := loopSummary{
-		StartedAt:    started.UTC(),
-		RepairMax:    l.cfg.RepairMaxAttempts(),
+		StartedAt:   started.UTC(),
+		RepairMax:   l.cfg.RepairMaxAttempts(),
 		FinalResult: loopBlocked, // overwritten once readiness is known
 	}
 	if *repairAttempts > 0 {
