@@ -1,0 +1,21 @@
+# Normalize the working tree to LF on every platform.
+#
+# Windows checkouts default to core.autocrlf=true, which rewrites files to CRLF
+# on checkout. That breaks two things LunarForge depends on:
+#
+#   1. gofmt treats a CRLF-terminated .go file as unformatted, so the `gofmt -l`
+#      step in scripts/verify.sh flags every file in the repo.
+#   2. A verify script checked out with CRLF fails on POSIX shells with a
+#      confusing "bad interpreter" error.
+#
+# Declaring the endings here overrides autocrlf, so the tree is identical
+# everywhere and the same ritual passes on Linux, macOS, and Windows.
+* text=auto eol=lf
+
+# Spelled out for the two that actually break, so the intent survives edits.
+*.go  text eol=lf
+*.sh  text eol=lf
+
+# PowerShell 7 (what CI and modern Windows use) reads LF fine, so these stay
+# normalized with everything else rather than carving out a CRLF exception.
+*.ps1 text eol=lf
