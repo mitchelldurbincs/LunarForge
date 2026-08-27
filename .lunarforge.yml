@@ -21,3 +21,13 @@ explain:
 evidence:
   dir: .lf/runs
   require_fresh_diff: true
+
+ci:
+  github_actions:
+    workflow_name: LunarForge
+    runs_on: ubuntu-latest
+    timeout_minutes: 30
+    upload_artifacts: true
+    install:
+      # This repo IS LunarForge, so build lf from ./cmd/lf rather than installing.
+      mode: source

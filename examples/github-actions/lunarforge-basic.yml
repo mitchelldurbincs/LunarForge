@@ -1,0 +1,49 @@
+# Basic / self-contained LunarForge CI workflow.
+#
+# This is the output of `lf gen-actions` for a repo (like examples/fixture-basic)
+# whose verify commands need no extra language/dependency setup. It builds `lf`
+# from this repo and delegates all verification to `lf ci`, which runs the same
+# verify.commands from .lunarforge.yml. Do NOT duplicate lint/test/build commands
+# here — .lunarforge.yml is the single source of truth.
+name: LunarForge
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: lunarforge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build LunarForge
+        run: go build -o lf ./cmd/lf
+
+      - name: Run LunarForge CI
+        run: ./lf ci
+
+      - name: Upload LunarForge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunarforge-evidence
+          path: .lf/runs/**

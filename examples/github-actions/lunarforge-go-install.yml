@@ -1,0 +1,60 @@
+# Go-install mode LunarForge CI workflow.
+#
+# Use this in a NORMAL project that *uses* LunarForge but does not contain its
+# source (there is no ./cmd/lf to build). It installs `lf` with `go install`
+# and runs `lf ci`, which executes the verify.commands from .lunarforge.yml.
+# This is the output of:
+#
+#   lf gen-actions --install-mode go-install --install-ref latest
+#
+# Pin a specific version with --install-ref v0.1.0 once releases exist. Note:
+# `@latest` only works once the LunarForge module is publicly installable — see
+# the README section "Using generated workflows in consumer repos".
+#
+# This workflow does NOT install your project's own dependencies/toolchain. Add
+# language setup (Node, Rust, CMake, ...) yourself, or via ci.setup_commands in
+# .lunarforge.yml. See lunarforge-node.yml for a worked example.
+name: LunarForge
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: lunarforge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install LunarForge
+        run: |
+          go install github.com/mitchelldurbincs/lunarforge/cmd/lf@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run LunarForge CI
+        run: lf ci
+
+      - name: Upload LunarForge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunarforge-evidence
+          path: .lf/runs/**

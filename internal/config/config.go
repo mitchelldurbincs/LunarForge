@@ -23,6 +23,7 @@ type Config struct {
 	Evidence Evidence         `yaml:"evidence"`
 	Repair   Repair           `yaml:"repair"`
 	Agents   map[string]Agent `yaml:"agents"`
+	CI       CI               `yaml:"ci"`
 
 	// path is the absolute path the config was loaded from. It is not part of
 	// the serialized YAML.
@@ -139,6 +140,56 @@ func (c *Config) ResolveAgent(name string) (string, Agent, error) {
 		return "", Agent{}, fmt.Errorf("repair agent %q has no command", name)
 	}
 	return name, a, nil
+}
+
+// CI configures the optional remote CI mirror. It is entirely optional —
+// `lf ci` and `lf gen-actions` work with sensible defaults when this section is
+// absent. The verify commands remain the single source of truth; CI only
+// controls how the generated workflow wraps them.
+type CI struct {
+	GitHubActions GitHubActions `yaml:"github_actions"`
+	// SetupCommands are optional shell commands run before `lf ci` in the
+	// generated workflow (e.g. "npm ci"). They install project dependencies that
+	// GitHub Actions cannot infer. Emitted as a single "Project setup" step.
+	SetupCommands []string `yaml:"setup_commands"`
+}
+
+// GitHubActions holds the knobs for the generated GitHub Actions workflow. Every
+// field is optional; zero values fall back to the generator defaults.
+type GitHubActions struct {
+	Enabled        bool   `yaml:"enabled"`
+	WorkflowName   string `yaml:"workflow_name"`
+	RunsOn         string `yaml:"runs_on"`
+	TimeoutMinutes int    `yaml:"timeout_minutes"`
+	// UploadArtifacts is a pointer so an unset value defaults to true (upload
+	// evidence), while an explicit `false` disables the upload step.
+	UploadArtifacts *bool `yaml:"upload_artifacts"`
+	// Install controls how the generated workflow obtains the `lf` binary. When
+	// the whole section is absent, the generator auto-detects: a repo containing
+	// ./cmd/lf (LunarForge itself) defaults to source mode, any other repo
+	// defaults to go-install mode.
+	Install Install `yaml:"install"`
+}
+
+// Install describes how the generated GitHub Actions workflow gets the `lf`
+// binary. It is optional; an empty Mode triggers auto-detection. The three
+// modes are:
+//
+//   - "source":     build `lf` from ./cmd/lf in this repo (LunarForge itself).
+//   - "go-install": `go install <Module>@<Ref>` (a normal repo using LunarForge).
+//   - "custom":     run explicit Commands that put `lf` on PATH.
+type Install struct {
+	Mode string `yaml:"mode"`
+	// Module is the `go install` target for go-install mode (e.g.
+	// "github.com/mitchelldurbincs/lunarforge/cmd/lf"). When empty the generator
+	// derives it from go.mod, falling back to the canonical LunarForge path.
+	Module string `yaml:"module"`
+	// Ref is the version/ref appended after @ for go-install mode (e.g. "latest"
+	// or "v0.1.0"). Empty means "latest".
+	Ref string `yaml:"ref"`
+	// Commands are the explicit install steps for custom mode. They must leave an
+	// `lf` binary on PATH. Ignored unless Mode is "custom".
+	Commands []string `yaml:"install_commands"`
 }
 
 // Path returns the absolute path the config was loaded from.

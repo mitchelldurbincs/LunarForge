@@ -26,8 +26,14 @@ lf verify             = local proof
 lf status             = fresh/stale proof check
 pre-push hook         = local enforcement before pushing
 lf explain            = diff understanding
-GitHub Actions        = remote backup later
+GitHub Actions        = remote backup (authoritative for PRs)
 ```
+
+The **local** loop (`lf verify` → `lf status` → pre-push hook) is fast and
+convenient, but a local hook can be bypassed with `git push --no-verify`. The
+**remote** loop (GitHub Actions running `lf ci`) re-runs the *same*
+`.lunarforge.yml` verify commands on the PR, so branch protection can make the
+gate authoritative — something a local CLI flag can't wave past.
 
 LunarForge does **not** replace Claude Code, Codex, or manual driving. It is the
 **local evidence layer that runs after an AI edits your code**: it proves the
@@ -64,18 +70,21 @@ A small, maintainable CLI (`lf`) that does a few things well:
    the smallest safe fix and reruns `lf verify`. The agent never declares
    success — only `lf verify` can. See [`lf repair` — repair failed gates](#lf-repair).
 5. **`lf install-hooks`** — installs a pre-push gate.
+6. **`lf ci`** — runs the same verify commands in CI (the remote mirror).
+7. **`lf gen-actions`** — generates a GitHub Actions workflow that runs `lf ci`.
 
 ## What LunarForge is *not* (yet)
 
 It is intentionally **not** an agent framework. It does **not** do autonomous
 implementation from vague tasks, `lf run "build feature"`, multi-agent
-workflows, remote servers, dashboards, GitHub Actions generation, or
-multi-machine routing. `lf repair` is deliberately narrow: it only reacts to a
-**failed** verification run and tries to make that exact gate pass — it does not
-do open-ended feature work. See [Roadmap](#roadmap).
+workflows, remote servers, dashboards, or multi-machine routing. `lf repair` is
+deliberately narrow: it only reacts to a **failed** verification run and tries
+to make that exact gate pass — it does not do open-ended feature work. See
+[Roadmap](#roadmap).
 
 The core is: **local verification + evidence + explanation, with an opt-in,
-narrow repair of failed gates.**
+narrow repair of failed gates**, plus a thin **remote mirror** of the same
+checks in GitHub Actions.
 
 ---
 
@@ -698,13 +707,261 @@ The hook is safe about existing hooks:
 - It is a POSIX `sh` script and is made executable on Unix-like systems. On
   Windows, Git for Windows ships its own `sh`, so the hook runs there too.
 
-#### Hooks are local — mirror them remotely later
+#### Hooks are local — GitHub Actions is the remote mirror
 
 A git pre-push hook is a **local** convenience and can be bypassed with
-`git push --no-verify`. It is not a server-side guarantee. The intended end
-state is to mirror the same `.lunarforge.yml` checks in **GitHub Actions** (or
-another CI) so the remote enforces what the local hook encourages. That remote
-mirror is on the [roadmap](#roadmap) and intentionally not part of this MVP.
+`git push --no-verify`. It is not a server-side guarantee. The remote mirror —
+**GitHub Actions** running the same `.lunarforge.yml` checks — is what makes the
+gate authoritative. See [GitHub Actions mirror](#github-actions-mirror).
+
+---
+
+## GitHub Actions mirror
+
+The local hook is **bypassable-but-useful**; GitHub Actions is **authoritative**.
+The remote workflow runs `lf ci`, which executes the *same* `verify.commands`
+from `.lunarforge.yml` — so there's a single source of truth and no drift
+between local and remote.
+
+```
+AGENTS.md / CLAUDE.md = reminders
+scripts/verify.sh     = repo ritual
+lf verify             = local proof
+lf status             = fresh/stale proof check
+pre-push hook         = local enforcement (bypassable with --no-verify)
+GitHub Actions        = remote backup (authoritative for PRs/branches)
+```
+
+The mental model for the three verify-shaped commands:
+
+```
+lf verify = local proof for the current working tree
+lf status = is the latest local proof still valid?
+lf ci     = remote proof for the current CI checkout
+```
+
+### Do not duplicate your commands
+
+The workflow **delegates** to LunarForge instead of re-listing your build/test
+commands:
+
+```yaml
+# ✅ Good — one source of truth
+- run: ./lf ci
+```
+
+```yaml
+# ❌ Bad — drifts from .lunarforge.yml
+- run: npm run lint
+- run: npm test
+- run: npm run build
+```
+
+### `lf ci`
+
+`lf ci` is the CI-friendly verification command. It loads `.lunarforge.yml`,
+confirms it's in a git repo, runs the configured `verify.commands`, and saves
+evidence under `.lf/runs/<timestamp>/` (so CI can upload it as an artifact).
+It exits `0` when all required commands pass and non-zero when any fails.
+
+Unlike `lf verify`, **`lf ci` does not care about pre-existing fresh local
+evidence** — in CI the current checkout *is* the source of truth, so it just
+runs the commands. When `GITHUB_ACTIONS=true`, it also emits an `::error::`
+annotation on failure and writes a short result table to the job summary.
+
+```
+LunarForge CI
+
+✅ lint passed       1.2s
+✅ test passed       5.4s
+
+Result:
+✅ CI verification passed
+
+Evidence:
+.lf/runs/2026-06-30T14-22-10/evidence.json
+```
+
+### `lf gen-actions`
+
+Generates `.github/workflows/lunarforge.yml`:
+
+```bash
+lf gen-actions                                       # default path, auto-detected mode
+lf gen-actions --install-mode source                 # build lf from ./cmd/lf
+lf gen-actions --install-mode go-install             # go install lf (consumer repos)
+lf gen-actions --install-mode go-install --install-ref v0.1.0
+lf gen-actions --output .github/workflows/x.yml      # custom path
+lf gen-actions --force                               # overwrite an existing file
+```
+
+It will **not** overwrite an existing workflow unless `--force` is passed, and
+prints the path plus next steps. The generated workflow:
+
+- runs on pull requests and pushes to `main`,
+- uses `concurrency` to cancel superseded runs,
+- uses minimal `permissions: contents: read`,
+- obtains `lf` according to the **install mode** (see below) and runs `lf ci`,
+- uploads `.lf/runs/**` as an artifact (`if: always()`).
+
+#### Install modes
+
+`lf gen-actions` needs to know how the workflow should get the `lf` binary.
+There are three modes:
+
+| Mode | For | How the workflow gets `lf` | Runs |
+|---|---|---|---|
+| `source` | the **LunarForge repo itself** | `go build -o lf ./cmd/lf` | `./lf ci` |
+| `go-install` | a **normal repo using LunarForge** | `go install <module>/cmd/lf@<ref>` | `lf ci` |
+| `custom` | release binaries / curl | your `install_commands` | `lf ci` |
+
+When `--install-mode` is omitted, the mode comes from
+`ci.github_actions.install.mode` in `.lunarforge.yml`, or is **auto-detected**:
+
+- if `./cmd/lf` **exists**, default to **source** mode (you're in LunarForge);
+- otherwise default to **go-install** mode (a consumer repo).
+
+For `go-install`, the module path is read from your `go.mod`
+(`<module>/cmd/lf`), falling back to
+`github.com/mitchelldurbincs/lunarforge/cmd/lf`. Override it with
+`--install-module`, and pin the version with `--install-ref`
+(`latest` by default).
+
+`custom` mode is configured in `.lunarforge.yml` and runs explicit install
+steps before `lf ci`:
+
+```yaml
+ci:
+  github_actions:
+    install:
+      mode: custom
+      install_commands:
+        - curl -L https://example.com/lf -o lf
+        - chmod +x lf
+        - sudo mv lf /usr/local/bin/lf
+```
+
+### Recommended setup
+
+```bash
+lf gen-actions
+git add .github/workflows/lunarforge.yml
+git commit -m "add LunarForge CI"
+git push
+```
+
+Then, in **GitHub → Settings → Branches → Branch protection rules**, require the
+**LunarForge / Verify** check to pass before merging. Local hooks can be skipped
+with `git push --no-verify`; a required GitHub check **cannot** be bypassed by a
+local CLI flag.
+
+### Important limitation: setup is your job
+
+The generated workflow is only a **remote mirror of your verify commands**. It
+does **not** install your project's dependencies or toolchain:
+
+- Node repos still need Node set up + `npm ci`.
+- Rust repos still need the Rust toolchain.
+- C++ repos may need CMake / a compiler.
+- Windows desktop repos may need `runs-on: windows-latest`.
+
+You have two options:
+
+1. **Edit the generated workflow** and add the setup steps you need (see the
+   ready-to-copy examples in [`examples/github-actions/`](examples/github-actions/)).
+2. **Use `ci.setup_commands`** in `.lunarforge.yml` to have a simple "Project
+   setup" step generated for you:
+
+   ```yaml
+   ci:
+     setup_commands:
+       - npm ci
+   ```
+
+Optional CI config (all fields are optional; defaults are shown):
+
+```yaml
+ci:
+  github_actions:
+    workflow_name: LunarForge   # name: of the workflow
+    runs_on: ubuntu-latest      # runner
+    timeout_minutes: 30         # job timeout
+    upload_artifacts: true      # upload .lf/runs/** as an artifact
+    install:
+      mode: go-install          # source | go-install | custom (default: auto-detect)
+      module: github.com/mitchelldurbincs/lunarforge/cmd/lf  # go-install target
+      ref: latest               # go-install version/ref
+      install_commands: []      # custom-mode install steps
+  setup_commands: []            # commands run before `lf ci`
+```
+
+Example workflows for common stacks:
+
+- [`lunarforge-source.yml`](examples/github-actions/lunarforge-source.yml) — **source mode** (developing LunarForge itself).
+- [`lunarforge-go-install.yml`](examples/github-actions/lunarforge-go-install.yml) — **go-install mode** (a normal repo using LunarForge).
+- [`lunarforge-basic.yml`](examples/github-actions/lunarforge-basic.yml) — self-contained source-mode workflow.
+- [`lunarforge-node.yml`](examples/github-actions/lunarforge-node.yml) — Node consumer: setup-node + `npm ci`.
+- [`lunarforge-windows.yml`](examples/github-actions/lunarforge-windows.yml) — `windows-latest` for C++/desktop.
+
+---
+
+## Using generated workflows in consumer repos
+
+LunarForge enforces the same gate at three layers. Local is fast and
+bypassable; remote is authoritative; workflow generation is how you set the
+remote layer up:
+
+```
+local:
+  lf verify                          # prove the working tree passes
+  lf status --require-fresh-passing  # is the latest proof still valid?
+  pre-push hook                      # local enforcement (bypassable with --no-verify)
+
+remote:
+  lf ci inside GitHub Actions        # authoritative re-run of the same checks
+
+workflow generation:
+  lf gen-actions --install-mode source       # for LunarForge itself
+  lf gen-actions --install-mode go-install    # for normal repos
+```
+
+The distinction that makes generation actually usable in a real project is the
+**install mode**. The LunarForge repo contains `./cmd/lf` and can build `lf`
+from source. A normal project that *uses* LunarForge does **not** — so the
+generated workflow must install `lf` instead of building it.
+
+```bash
+# In the LunarForge repo (source is auto-detected because ./cmd/lf exists):
+lf gen-actions --install-mode source
+
+# In a normal project repo (go-install is auto-detected because there is no ./cmd/lf):
+lf gen-actions --install-mode go-install --install-ref latest
+```
+
+The go-install workflow runs `lf ci` (the binary is on `PATH`), never
+`./lf ci`, and never references `./cmd/lf` — so it does not assume the consumer
+repo contains LunarForge source. A self-contained example of a consumer repo
+lives in
+[`examples/fixture-consumer-basic/`](examples/fixture-consumer-basic/): it has a
+`.lunarforge.yml`, a `verify.sh`/`verify.ps1`, and a `src/hello.txt`, but **no
+`cmd/lf`**.
+
+### Limitation: `@latest` needs an installable module
+
+`go install <module>/cmd/lf@latest` only works once the LunarForge module is
+actually fetchable by `go install` at that ref — i.e. it's a public module (or
+reachable via your `GOPRIVATE`/proxy config) and the ref exists. Until tagged
+releases exist you have a few honest options:
+
+- pin a **branch or commit** instead of a tag, e.g.
+  `lf gen-actions --install-mode go-install --install-ref main` (Go module
+  pseudo-versions accept a branch name or commit SHA);
+- use **`custom` mode** to download a prebuilt binary in CI;
+- or, while iterating, vendor LunarForge into the consumer repo and use
+  `source` mode.
+
+When real releases exist, switch back to `--install-ref v0.1.0` (or `latest`)
+for a clean, version-pinned install.
 
 ---
 
@@ -808,12 +1065,9 @@ lf status --require-fresh-passing    # exits non-zero
 ## Roadmap
 
 The core is deliberately small. The code is structured (config / gitutil /
-evidence / runner / explain / repair / hooks) so these can be added later
-without a rewrite:
+evidence / runner / explain / repair / hooks / actions) so these can be added
+later without a rewrite:
 
-- Generating a GitHub Actions workflow for *your* repo (the remote mirror of
-  `lf verify`). LunarForge's own CI exists, but `lf` does not yet write one for
-  the repos it gates.
 - Richer explain modes and model-per-step selection.
 - Editable workflows beyond the fixed `lf loop` sequence (`lf loop` stays a
   single, non-autonomous chain of the existing local commands and does not do
@@ -824,8 +1078,8 @@ without a rewrite:
 - Remote server / dashboard / multi-machine workers.
 
 The principle stays the same: **local verification + evidence + explanation,
-done well, with a narrow, opt-in repair of failed gates, and a single boring
-loop that chains them.**
+done well, with a narrow, opt-in repair of failed gates, a single boring loop
+that chains them, and a thin remote mirror of the same checks.**
 
 ---
 
@@ -845,6 +1099,7 @@ internal/
   explain/              # builds the prompt, invokes the explain agent
   repair/               # builds the repair prompt, invokes the repair agent
   hooks/                # installs the pre-push hook
+  actions/              # generates the GitHub Actions workflow (lf gen-actions)
 cmd/lf/cmd_loop.go      # `lf loop`: composes verify → repair → explain
 cmd/lf/loop_summary.go  # loop summary artifact (.lf/loops/<ts>/)
 examples/
@@ -852,6 +1107,7 @@ examples/
   cpp/.lunarforge.yml
   scripts/verify.sh
   scripts/verify.ps1
+  github-actions/           # ready-to-copy CI workflows (basic / node / windows)
   fixture-basic/            # self-contained end-to-end fixture (no external deps)
     .lunarforge.yml
     src/hello.txt

@@ -26,6 +26,10 @@ func main() {
 		err = cmdInit(args)
 	case "verify":
 		err = cmdVerify(args)
+	case "ci":
+		err = cmdCI(args)
+	case "gen-actions":
+		err = cmdGenActions(args)
 	case "explain":
 		err = cmdExplain(args)
 	case "repair":
@@ -86,6 +90,8 @@ Commands:
   init            Create .lunarforge.yml and .lf/ in the current repo
   verify          Run verify commands and save evidence tied to the current diff
   status          Show whether the latest evidence is fresh and passing
+  ci              Run verify commands in CI and save evidence (remote mirror)
+  gen-actions     Generate a GitHub Actions workflow that runs 'lf ci'
   explain         Explain the current diff using git + the latest evidence
   repair          Ask a configured AI agent to fix failed verification, then reverify
   loop            Run verify → repair if needed → explain when verified
