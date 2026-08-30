@@ -15,14 +15,13 @@ import (
 // marker identifies hooks managed by LunarForge.
 const marker = "# >>> LunarForge managed pre-push hook >>>"
 
-// prePushScript is the pre-push hook body. It runs
-// `lf status --require-fresh-passing`, which exits non-zero unless there is
-// fresh, passing evidence for the current diff. It does NOT re-run the verify
-// commands, so the gate is fast.
+// prePushScript is the pre-push hook body. Evidence is only meaningful for a
+// final, clean commit, so the hook also rejects dirty worktrees and pushes of a
+// different local commit than HEAD. It does not re-run verification.
 const prePushScript = `#!/bin/sh
 ` + marker + `
 # Installed by: lf install-hooks
-# Blocks a push unless LunarForge has fresh, passing evidence for the current diff.
+# Blocks a push unless the final, clean HEAD has fresh passing evidence.
 # This only reads saved evidence; it does not re-run your tests.
 # To bypass once:  git push --no-verify
 
@@ -32,10 +31,32 @@ if ! command -v lf >/dev/null 2>&1; then
   exit 1
 fi
 
+# Git supplies one line per pushed ref on stdin. A verification result for the
+# checked-out HEAD cannot prove a different local commit.
+head=$(git rev-parse HEAD) || exit 1
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) continue ;;
+  esac
+  local_commit=$(git rev-parse "$local_sha^{commit}") || exit 1
+  if [ "$local_commit" != "$head" ]; then
+    echo "LunarForge pre-push gate: $local_ref is not the checked-out HEAD." >&2
+    echo "Check out the commit being pushed, run 'lf verify', and try again." >&2
+    exit 1
+  fi
+done
+
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "LunarForge pre-push gate: the worktree is not clean." >&2
+  echo "Commit or discard changes, run 'lf verify' on the final commit, and try again." >&2
+  exit 1
+fi
+
 if ! lf status --require-fresh-passing; then
   echo "" >&2
   echo "LunarForge pre-push gate failed: no fresh passing evidence." >&2
-  echo "Run 'lf verify' and try again, or push with --no-verify to bypass." >&2
+  echo "Run 'lf verify' on the final clean commit and try again." >&2
+  echo "To bypass once: git push --no-verify" >&2
   exit 1
 fi
 exit 0

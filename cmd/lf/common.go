@@ -36,10 +36,7 @@ func load() (*loaded, error) {
 		return nil, fmt.Errorf("%s is not inside a git repository", repoDir)
 	}
 
-	evidenceDir := cfg.EvidenceDir()
-	if !filepath.IsAbs(evidenceDir) {
-		evidenceDir = filepath.Join(repoDir, evidenceDir)
-	}
+	evidenceDir := filepath.Join(repoDir, evidence.DefaultDir)
 	return &loaded{cfg: cfg, repoDir: repoDir, evidenceDir: evidenceDir}, nil
 }
 
@@ -53,13 +50,4 @@ func (l *loaded) excludes() []string {
 // artifacts. This must match how the runner computes it at verify time.
 func (l *loaded) currentDiffHash() (string, error) {
 	return gitutil.DiffHash(l.repoDir, l.excludes()...)
-}
-
-// freshness reports whether ev matches the current diff hash.
-func freshness(l *loaded, ev *evidence.Evidence) (bool, string, error) {
-	currentHash, err := l.currentDiffHash()
-	if err != nil {
-		return false, "", err
-	}
-	return currentHash == ev.DiffHash, currentHash, nil
 }

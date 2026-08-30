@@ -1,6 +1,6 @@
 // Command lf is the LunarForge CLI: a local engineering gate for AI-assisted
-// coding. It runs your repo's verify commands, records evidence tied to the
-// current git diff, and explains the diff.
+// coding. It runs a repository's required checks and records evidence tied to
+// the exact repository state.
 package main
 
 import (
@@ -9,7 +9,7 @@ import (
 )
 
 // version is the build version, overridable via -ldflags.
-var version = "0.1.0-mvp"
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -30,12 +30,6 @@ func main() {
 		err = cmdCI(args)
 	case "gen-actions":
 		err = cmdGenActions(args)
-	case "explain":
-		err = cmdExplain(args)
-	case "repair":
-		err = cmdRepair(args)
-	case "loop":
-		err = cmdLoop(args)
 	case "status":
 		err = cmdStatus(args)
 	case "install-hooks":
@@ -90,12 +84,9 @@ Commands:
   init            Create .lunarforge.yml and .lf/ in the current repo
   verify          Run verify commands and save evidence tied to the current diff
   status          Show whether the latest evidence is fresh and passing
-  ci              Run verify commands in CI and save evidence (remote mirror)
-  gen-actions     Generate a GitHub Actions workflow that runs 'lf ci'
-  explain         Explain the current diff using git + the latest evidence
-  repair          Ask a configured AI agent to fix failed verification, then reverify
-  loop            Run verify → repair if needed → explain when verified
-  install-hooks   Install a pre-push hook that requires fresh passing evidence
+  ci              Compatibility alias for verify
+  gen-actions     Generate a GitHub Actions workflow that runs 'lf verify'
+  install-hooks   Install a pre-push gate for a verified, clean HEAD
   version         Print the version
   help            Show this help
 

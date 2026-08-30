@@ -1,1155 +1,320 @@
 # LunarForge (`lf`)
 
-**A local-first engineering gate for AI-assisted coding.**
+LunarForge is a deterministic verification gate for repositories changed by
+people or coding agents.
 
-You drive an AI agent (Claude Code, Codex, or another). The agent edits files.
-LunarForge is the layer that actually **runs your repo's lint/build/test
-ritual**, **records evidence tied to the exact current git diff**, and
-**explains what changed** — so you review from a much better place.
-
-The core rules LunarForge enforces locally:
-
-```
-No fresh evidence        → not ready.
-Build/test/lint failed   → not ready.
-Diff changed after verify → evidence is stale.
-```
-
----
-
-## The philosophy
-
-```
-AGENTS.md / CLAUDE.md = reminders for agents
-scripts/verify.sh     = real repo ritual
-lf verify             = local proof
-lf status             = fresh/stale proof check
-pre-push hook         = local enforcement before pushing
-lf explain            = diff understanding
-GitHub Actions        = remote backup (authoritative for PRs)
+```text
+Hermes / Claude / Codex
+        edits code
+            ↓
+      lf verify --json
+            ↓
+ deterministic checks + snapshot-bound evidence
+            ↓
+ PASS / FAIL / STALE / BLOCKED / ERROR
 ```
 
-The **local** loop (`lf verify` → `lf status` → pre-push hook) is fast and
-convenient, but a local hook can be bypassed with `git push --no-verify`. The
-**remote** loop (GitHub Actions running `lf ci`) re-runs the *same*
-`.lunarforge.yml` verify commands on the PR, so branch protection can make the
-gate authoritative — something a local CLI flag can't wave past.
+It does not choose work, edit code, invoke agents, or decide whether to retry.
+The caller owns orchestration. LunarForge defines what “good” means, runs those
+checks, and reports what it proved.
 
-LunarForge does **not** replace Claude Code, Codex, or manual driving. It is the
-**local evidence layer that runs after an AI edits your code**: it proves the
-checks passed, ties that proof to the exact code you're about to push, and
-blocks the push if the proof is missing, failed, or stale.
+## Why use it?
 
-### Why AGENTS.md / CLAUDE.md are not enough by themselves
-
-`AGENTS.md` and `CLAUDE.md` are **reminders**. They tell an agent "please run
-the tests" or "this repo uses npm." But they are advisory text. Nothing checks
-that the agent actually ran anything, nothing records *whether it passed*, and
-nothing notices when the code changed again *after* the checks ran.
-
-LunarForge is the **enforcement layer**:
-
-- It runs the commands for real.
-- It saves evidence (exit codes, stdout, stderr, timing) on disk.
-- It binds that evidence to a hash of the current diff, so if the code changes
-  afterward, the evidence is flagged **stale**.
-- It can block a `git push` until there is fresh, passing evidence.
-
-Reminders ask. LunarForge verifies.
-
----
-
-## What LunarForge is
-
-A small, maintainable CLI (`lf`) that does a few things well:
-
-1. **`lf verify`** — runs your configured commands and records evidence.
-2. **`lf status`** — tells you if the latest evidence is fresh and passing.
-3. **`lf explain`** — explains the current diff using git + the latest evidence.
-4. **`lf repair`** — when verification **failed**, asks a configured AI agent for
-   the smallest safe fix and reruns `lf verify`. The agent never declares
-   success — only `lf verify` can. See [`lf repair` — repair failed gates](#lf-repair).
-5. **`lf install-hooks`** — installs a pre-push gate.
-6. **`lf ci`** — runs the same verify commands in CI (the remote mirror).
-7. **`lf gen-actions`** — generates a GitHub Actions workflow that runs `lf ci`.
-
-## What LunarForge is *not* (yet)
-
-It is intentionally **not** an agent framework. It does **not** do autonomous
-implementation from vague tasks, `lf run "build feature"`, multi-agent
-workflows, remote servers, dashboards, or multi-machine routing. `lf repair` is
-deliberately narrow: it only reacts to a **failed** verification run and tries
-to make that exact gate pass — it does not do open-ended feature work. See
-[Roadmap](#roadmap).
-
-The core is: **local verification + evidence + explanation, with an opt-in,
-narrow repair of failed gates**, plus a thin **remote mirror** of the same
-checks in GitHub Actions.
-
----
-
-## The intended workflow
-
-```
-1. You manually drive Claude Code / Codex / another agent.
-2. The agent edits files.
-3. You run `lf verify`.
-4. LunarForge runs your repo's required local lint/build/test command(s).
-5. LunarForge saves evidence tied to the exact current git diff.
-6. You optionally run `lf explain`.
-7. You review the change.
-8. When you push, the pre-push hook runs `lf status --require-fresh-passing`.
-9. If evidence is missing, failed, or stale, the push is blocked.
-```
-
-**The invariant:** no fresh passing evidence means the repo is not ready to
-push.
-
----
-
-## Install / build locally
-
-LunarForge is a single Go binary with one dependency (`gopkg.in/yaml.v3`).
+A repository normally scatters its required checks across docs, agent prompts,
+and CI YAML. LunarForge gives every caller one command and one result contract:
 
 ```bash
-# Requires Go 1.24+
-git clone <this-repo>
-cd lunarforge
-
-# Build a local binary
-go build -o lf ./cmd/lf
-
-# Or install onto your PATH
-go install ./cmd/lf      # installs `lf` into $(go env GOBIN) or $GOPATH/bin
+lf verify --json
 ```
 
-Put `lf` somewhere on your `PATH`. Verify:
+The result is tied to the exact Git state: HEAD, staged and unstaged changes,
+and the paths, modes, and contents of untracked files. A later edit makes old
+evidence stale. LunarForge also detects a check that changes the repository
+while verification is running.
+
+## Install
+
+LunarForge requires Go 1.24 or later.
 
 ```bash
+go install github.com/mitchelldurbincs/lunarforge/cmd/lf@latest
 lf version
-lf help
 ```
 
-It is cross-platform: on macOS/Linux verify commands run through `sh -c`, on
-Windows through `cmd /C`. The pre-push hook is a POSIX `sh` script (git ships
-its own `sh` on Windows).
-
----
-
-## Day one
+To build this repository instead:
 
 ```bash
-cd your-repo
-lf init                 # creates .lunarforge.yml and .lf/
-# edit .lunarforge.yml, write scripts/verify.sh (or verify.ps1)
-lf verify               # run checks, save evidence
-lf status               # is evidence fresh + passing?
-lf explain              # explain the current diff (optional)
-lf install-hooks        # block pushes without fresh passing evidence
+go build -o lf ./cmd/lf
 ```
 
-## Recommended daily loop
+## Configure a repository
 
-```bash
-# manually drive Claude Code / Codex; the agent edits files
-git add -A && git commit -m "..."   # commit the change you want to push
-
-lf loop                             # verify → repair if needed → explain when verified
-
-# if successful:
-git diff
-git push                            # pre-push hook gates on fresh passing evidence
-```
-
-`lf loop` runs the standard sequence in one command. The individual commands
-(`lf verify`, `lf repair`, `lf explain`) are still there when you want finer
-control — see [Local loop](#local-loop) for when to use each.
-
-The pre-push hook blocks the push unless fresh, passing evidence exists for the
-exact code being pushed. Commit first, then run the loop, so the evidence is tied
-to the commit you push.
-
----
-
-## Creating `.lunarforge.yml`
-
-LunarForge looks for `.lunarforge.yml` in the current repo (walking up to the
-repo root). `lf init` writes a minimal starter that runs a single script:
+Run `lf init`, then make `.lunarforge.yml` describe the checks that must pass:
 
 ```yaml
 version: 1
-
-project:
-  name: example-repo
-
-verify:
-  commands:
-    - id: verify
-      run: ./scripts/verify.sh
-
-explain:
-  agent: claude
-  command: claude
-  args:
-    - --print
-    - --permission-mode
-    - plan
-
-evidence:
-  dir: .lf/runs
-  require_fresh_diff: true
-```
-
-You can list **multiple** verify commands; they run in order and stop on the
-first failure (use `lf verify --continue-on-failure` to run them all).
-
-### Example: Node
-
-```yaml
-version: 1
-
-project:
-  name: node-app
 
 verify:
   commands:
     - id: lint
       run: npm run lint
-    - id: typecheck
-      run: npm run typecheck
     - id: test
       run: npm test
+      timeout_seconds: 900
     - id: build
       run: npm run build
-
-explain:
-  agent: claude
-  command: claude
-  args:
-    - --print
-    - --permission-mode
-    - plan
-
-evidence:
-  dir: .lf/runs
-  require_fresh_diff: true
 ```
 
-### Example: C++
+That is the entire configuration schema. Commands run in order from the
+repository root. They stop after the first failure unless
+`--continue-on-failure` is used. Each command defaults to a 30-minute timeout.
+
+Command IDs may contain letters, numbers, `.`, `_`, and `-`. They become log
+filenames, so path-like IDs are rejected. Unknown configuration fields are
+errors instead of being silently ignored.
+
+For a project with a single canonical check script, the starter is enough:
 
 ```yaml
 version: 1
 
-project:
-  name: imgui-tool
-
 verify:
   commands:
-    - id: build_debug
-      run: cmake --build build --config Debug
-    - id: test
-      run: ctest --test-dir build --output-on-failure
-    - id: build_release
-      run: cmake --build build --config Release
-
-explain:
-  agent: claude
-  command: claude
-  args:
-    - --print
-    - --permission-mode
-    - plan
-
-evidence:
-  dir: .lf/runs
-  require_fresh_diff: true
+    - id: verify
+      run: ./scripts/verify.sh
 ```
 
-Ready-to-copy versions live in [`examples/`](examples/), along with starter
-[`verify.sh`](examples/scripts/verify.sh) / [`verify.ps1`](examples/scripts/verify.ps1)
-scripts.
+Commit `.lunarforge.yml`, the verification script, and the generated
+`.lf/.gitignore`. Evidence under `.lf/` remains local.
 
----
+## Commands
 
-## How the commands work
-
-### `lf init`
-
-Creates `.lunarforge.yml` (a single-script starter named after the current
-directory) and the `.lf/` evidence directory. It will **not** overwrite an
-existing `.lunarforge.yml` unless you pass `--force`. It also drops a
-`.lf/.gitignore` so run artifacts stay local by default, and reminds you to
-create `scripts/verify.sh` / `scripts/verify.ps1`.
-
-### `lf verify`
-
-1. Loads `.lunarforge.yml`.
-2. Confirms you're inside a git repo.
-3. Computes a **diff hash** of the current changes (see below).
-4. Runs each verify command in order, capturing id, command string, start/end
-   time, duration, exit code, stdout, stderr, and pass/fail.
-5. Stops on the first failure by default (`--continue-on-failure` to override).
-6. Saves evidence under `.lf/runs/<timestamp>/` and updates `.lf/latest`, even
-   when a command fails.
-
-```
-LunarForge verify
-
-✅ lint passed       1.2s
-✅ typecheck passed  3.8s
-✅ test passed       5.4s
-✅ build passed      8.1s
-
-Result:
-✅ ready locally
-
-Evidence:
-.lf/runs/2026-06-30T14-22-10/evidence.json
-
-Diff:
-sha256:abc123...
+```text
+lf init            create the minimal repository policy
+lf verify          run checks and write evidence
+lf status          evaluate the latest evidence against the current snapshot
+lf install-hooks   install the optional pre-push gate
+lf gen-actions     generate the canonical GitHub Actions workflow
+lf ci              compatibility alias for lf verify
 ```
 
-On failure it prints the failing command and points at its logs, still saves
-evidence, and exits non-zero:
-
-```
-LunarForge verify
-
-✅ lint passed  1.2s
-❌ test failed  2.9s
-
-Result:
-❌ not ready
-
-Failed command:
-npm test
-
-Logs:
-.lf/runs/2026-06-30T14-25-03/commands/test.stdout.txt
-.lf/runs/2026-06-30T14-25-03/commands/test.stderr.txt
-```
-
-#### The diff hash
-
-Evidence is bound to the exact code that would be pushed via a deterministic
-SHA-256 of:
+### Verify
 
 ```bash
-git rev-parse HEAD          # the commit being pushed
-git diff --binary           # tracked, unstaged changes
-git diff --cached --binary  # staged changes
-git status --porcelain      # which files are added/modified/untracked
+lf verify
+lf verify --json --quiet
+lf verify --continue-on-failure
 ```
 
-If **HEAD advances** (you make a new commit) or your **tracked/staged**
-working-tree changes change after `lf verify`, the hash changes and the evidence
-becomes **stale**. LunarForge's own evidence directory (`.lf/`) is excluded from
-the hash, so recording evidence never makes that evidence stale.
+Check stdout and stderr are saved separately under `.lf/runs/<run>/checks/`.
+Without `--quiet`, they are also streamed to the terminal. In JSON mode the
+streams go to stderr, leaving stdout as one JSON document.
 
-**Known limitations (by design for the MVP):**
+Every configured check receives a record. Checks not run after an earlier
+problem have state `skipped` and a reason identifying the prior failure or
+block.
 
-- The *contents* of an **untracked** file are not hashed — an untracked file
-  registers only by name via `git status --porcelain`. Track or stage a file to
-  have its contents gate the push.
-- The hash reflects HEAD plus uncommitted changes, not the full file tree. If
-  you `lf verify` a dirty tree and then commit those exact changes, re-run
-  `lf verify` so the evidence is tied to the new commit (committing changes the
-  hash). The recommended loop — *commit, then verify* — avoids this.
+### Status
 
-#### Evidence layout
-
-```
-.lf/runs/2026-06-30T14-22-10/
-  evidence.json          # machine-readable record (below)
-  summary.md             # human-readable summary table
-  explanation.md         # written by `lf explain`
-  explain-prompt.md      # the exact prompt sent to the explain agent
-  commands/
-    lint.stdout.txt
-    lint.stderr.txt
-    test.stdout.txt
-    test.stderr.txt
-.lf/latest               # pointer to the most recent run id
+```bash
+lf status
+lf status --json
+lf status --require-fresh-passing
 ```
 
-`evidence.json` keeps large output out of the JSON by pointing at the
-per-command files:
+Plain `lf status` is informational. `--json` and
+`--require-fresh-passing` return a nonzero exit code when the result is not
+ready, making them suitable for programs and hooks.
+
+`status` never runs checks. It validates and compares saved evidence. Missing
+evidence and corrupt evidence are distinct results.
+
+### Pre-push gate
+
+```bash
+lf install-hooks
+```
+
+The hook only accepts fresh passing evidence for the final, clean, checked-out
+HEAD. The safe order is therefore:
+
+```bash
+git add -A
+git commit -m "make the change"
+lf verify
+git push
+```
+
+The hook is fast because it calls `lf status --require-fresh-passing`; it does
+not rerun checks. Like any local hook it can be bypassed with
+`git push --no-verify`. Protect the remote branch with CI when enforcement must
+be authoritative.
+
+### GitHub Actions
+
+```bash
+lf gen-actions --install-ref latest
+```
+
+This writes `.github/workflows/lunarforge.yml` without overwriting an existing
+file unless `--force` is supplied. The workflow installs LunarForge, runs
+`lf verify --json`, and uploads `.lf/runs/**` even on failure.
+
+Pin `--install-ref` to a release tag for reproducible CI. Project-specific
+language setup can be added to the generated workflow; the actual lint, test,
+and build policy should remain in `.lunarforge.yml`.
+
+## Programmatic contract
+
+`lf verify --json` and `lf status --json` emit schema version 1. A shortened
+successful result looks like this:
 
 ```json
 {
-  "version": 1,
-  "project": "example-repo",
-  "run_id": "2026-06-30T14-22-10",
-  "started_at": "2026-06-30T14:22:10Z",
-  "finished_at": "2026-06-30T14:23:02Z",
-  "result": "passed",
-  "diff_hash": "sha256:abc123",
-  "git": { "branch": "main", "head": "abc1234", "status_porcelain": "..." },
-  "commands": [
+  "schema_version": 1,
+  "command": "verify",
+  "state": "pass",
+  "reason": "checks_passed",
+  "repository": {
+    "root": "/repo",
+    "branch": "main",
+    "head": "abc1234",
+    "dirty": false,
+    "fingerprint": "sha256:..."
+  },
+  "run": {
+    "id": "2026-08-30T12-00-00.000000000Z-a1b2c3d4",
+    "evidence_path": ".lf/runs/.../evidence.json",
+    "started_at": "2026-08-30T12:00:00Z",
+    "finished_at": "2026-08-30T12:00:01Z",
+    "state": "pass",
+    "reason": "checks_passed",
+    "branch": "main",
+    "head": "abc1234",
+    "dirty": false,
+    "fingerprint": "sha256:...",
+    "final_fingerprint": "sha256:..."
+  },
+  "checks": [
     {
-      "id": "lint",
-      "run": "npm run lint",
-      "started_at": "...",
-      "finished_at": "...",
-      "duration_ms": 1234,
+      "id": "test",
+      "run": "go test ./...",
+      "state": "pass",
+      "reason": "checks_passed",
       "exit_code": 0,
-      "stdout_path": "commands/lint.stdout.txt",
-      "stderr_path": "commands/lint.stderr.txt",
-      "result": "passed"
+      "duration_ms": 814,
+      "timeout_ms": 1800000,
+      "stdout_path": ".lf/runs/.../checks/test.stdout.txt",
+      "stderr_path": ".lf/runs/.../checks/test.stderr.txt"
     }
   ]
 }
 ```
 
-### `lf status`
+Failure results include the last 4,000 bytes of each check stream as
+`stdout_tail` and `stderr_tail`, plus full log paths. This is normally enough
+for an orchestrator to give a coding agent useful feedback without parsing
+terminal prose.
 
-This is the core enforcement command. It loads the latest evidence, recomputes
-the current diff hash, and reports whether the evidence is **fresh** (matches
-the current code) and **passing**.
+Top-level states and process exit codes are stable within schema version 1:
 
-```
-LunarForge status
+| State | Exit | Meaning |
+|---|---:|---|
+| `pass` | 0 | All checks passed for one unchanged snapshot. |
+| `fail` | 1 | A check ran and failed. |
+| `stale` | 1 | The current snapshot differs from the verified snapshot. |
+| `blocked` | 2 | Verification could not run as configured. |
+| `error` | 3 | LunarForge or saved evidence failed internally. |
 
-Latest evidence:
-✅ passed
+Stable reason codes include:
 
-Freshness:
-✅ fresh for current diff
+| Reason | Meaning |
+|---|---|
+| `checks_passed` | Every required check passed. |
+| `check_failed` | A required check returned nonzero. |
+| `snapshot_changed` | Source changed during or after verification. |
+| `no_evidence` | No previous run exists. |
+| `config_invalid` | `.lunarforge.yml` is missing or invalid. |
+| `tool_unavailable` | A configured executable could not be invoked. |
+| `timed_out` | A check exceeded `timeout_seconds`. |
+| `evidence_corrupt` | The latest saved record cannot be trusted. |
+| `internal_error` | Git, filesystem, or LunarForge itself failed. |
 
-Result:
-✅ ready to push
-```
+Consumers should branch on `state` and `reason`, not message text. `checks[]`
+is the repair input; files under `.lf/` are durable detail and audit evidence.
 
-`lf status --require-fresh-passing` (used by the pre-push hook) makes the exit
-code the source of truth. It exits:
+## Hermes workflow
 
-- **`0`** only when latest evidence **exists**, **passed**, and its diff hash
-  **matches** the current code.
-- **non-zero** when any of these hold: no evidence exists, the latest run
-  failed, the evidence is stale, the current directory is not a git repo, or
-  `.lunarforge.yml` is missing/invalid.
+The intended integration is a normal subprocess loop:
 
-`--strict` is accepted as an alias. `lf status --json` prints the same decision
-as machine-readable JSON (`ready`, `reason`, hashes, run id) for scripting.
+1. Hermes chooses a task and asks a coding agent to make the change.
+2. The agent returns control; Hermes commits the candidate change if clean-HEAD
+   gating is desired.
+3. Hermes runs `lf verify --json --quiet` in the repository.
+4. On `pass`, Hermes may summarize, push, or open a PR.
+5. On `fail`, Hermes sends only the failing check, reason, command, error, and
+   stream tails back to the coding agent, then verifies the next candidate.
+6. On `stale`, Hermes stops treating the old run as proof and verifies the
+   current snapshot.
+7. On `blocked`, Hermes fixes environment/configuration or asks for help; it
+   should not ask an agent to “repair the tests.”
+8. On `error`, Hermes reports an infrastructure problem and preserves the run
+   directory for diagnosis.
 
-Example states:
+Only LunarForge's result decides whether the candidate is verified. Retry and
+abandonment policy stays in Hermes.
 
-```
-Latest evidence:        Latest evidence:        Latest evidence:
-❌ none found           ✅ passed               ❌ failed
-
-Result:                 Freshness:              Result:
-❌ not ready to push    ⚠️ stale — ...          ❌ not ready to push
-
-Run:                    Result:                 Run:
-lf verify               ❌ not ready to push    lf verify
-```
-
-### `lf explain`
-
-1. Reads current git status + diff.
-2. Loads the latest evidence (if any) and decides fresh vs. stale.
-3. Builds a prompt asking for: a concise summary, files changed, why each file
-   changed, verification evidence, evidence freshness, risks, and manual review
-   suggestions.
-4. Invokes the configured explain command using an **exec-style argument
-   array** (no fragile shell string). For the config above it runs:
-
-   ```bash
-   claude --print --permission-mode plan "<generated prompt>"
-   ```
-
-5. Saves the explanation to `.lf/runs/<run>/explanation.md` and prints it.
-
-`lf explain` is **advisory, not a gate** — it is not required by the pre-push
-hook, and it works whether evidence is fresh, stale, failed, or missing. The
-prompt asks the agent for a concise summary, files changed, why each changed,
-verification status, whether evidence is fresh/stale/failed/missing, risks, and
-manual review suggestions.
-
-The generated prompt is **always** saved to `.lf/runs/<run>/explain-prompt.md`
-first — so if the explain command is missing or fails, you still have the prompt
-to run manually (and `lf explain` exits non-zero without aborting your work).
-
-Flags:
-
-- `lf explain --print-prompt` — print the generated prompt and stop (no agent).
-- `lf explain --no-run` (alias `--prompt-only`) — save the prompt without
-  invoking any agent.
-
-The explain command can be a bare name resolved on `PATH` (e.g. `claude`) or a
-repo-relative path (e.g. `./scripts/fake-explain.sh`); relative commands resolve
-against the repo root. This makes it easy to wire a fake explain script in CI or
-fixtures.
-
-### `lf repair`
-
-**Repair failed gates.** When `lf verify` has **failed**, `lf repair` hands the failure to a configured
-AI agent and asks for the **smallest safe fix**, then reruns `lf verify`. It is
-not autonomous feature work — it only ever responds to **failed LunarForge
-verification evidence**, and the agent does **not** get to declare success. Only
-`lf verify` can.
-
-What it does:
-
-```
-1. Load .lunarforge.yml and the latest evidence.
-2. Refuse if there is no evidence, or if the latest evidence passed.
-3. Identify the failed command(s) and read their stdout/stderr logs.
-4. Read current git status and git diff.
-5. Build a strict repair prompt (saved under the run dir).
-6. Invoke the configured repair agent (prompt delivered on stdin).
-7. Save the agent's stdout/stderr/result.
-8. Rerun `lf verify`.
-9. Stop when verify passes, or after max attempts.
-```
-
-The prompt is strict by construction: make the smallest safe diff; do not start
-unrelated refactors; do not weaken or delete tests; do not skip the failing
-command; do not edit `.lunarforge.yml` unless the failure is clearly a config
-problem; do not push/commit/branch; do not edit generated/vendor/secret paths;
-and after editing, do **not** claim success.
-
-Flags (priority order):
-
-- `lf repair` — repair the latest failed run.
-- `lf repair --dry-run` — show the plan (agent command + where artifacts would
-  be written) without invoking the agent or running verify.
-- `lf repair --print-prompt` — print the generated prompt and exit.
-- `lf repair --attempts <n>` — override `repair.max_attempts`.
-- `lf repair --agent <name>` — pick an agent from the `agents:` map.
-- `lf repair --from-latest-failed` — repair the most recent **failed** run even
-  if a newer passing run exists.
-- `lf repair --no-verify` — invoke the agent once without rerunning verify
-  (cannot confirm a fix; for debugging the agent wiring).
-
-If the latest failed evidence is **stale** (the working tree changed since that
-run), repair still runs but prints a warning and notes it in the prompt.
-
-#### Artifacts
-
-Each attempt writes under the original failed run's directory:
-
-```
-.lf/runs/<original-failed-run>/repair/
-  attempt-1/
-    prompt.md          # the exact prompt sent to the agent
-    agent.stdout.txt
-    agent.stderr.txt
-    result.json        # agent name/command/args/exit code
-  attempt-2/ ...
-  summary.md           # original run, failed commands, attempts, final result
-```
-
-Each verify rerun creates its own normal `.lf/runs/<timestamp>/` evidence.
-
-#### Config
-
-Repair is configured in `.lunarforge.yml`. The agent abstraction is small: a
-name, an informational backend label, a command, and fixed args. LunarForge
-writes the generated prompt to the command's **stdin**, which both
-`claude --print` and `codex exec -` accept.
-
-```yaml
-repair:
-  enabled: true
-  max_attempts: 3
-  verify_after_each_attempt: true
-  max_log_chars: 20000        # truncate inlined logs; full logs stay on disk
-  agent: claude_repair        # default agent (override with --agent)
-
-agents:
-  claude_repair:
-    backend: claude_code
-    command: claude
-    args:
-      - --print
-      - --permission-mode
-      - acceptEdits
-
-  codex_repair:
-    backend: codex
-    command: codex
-    args:
-      - exec
-      - --sandbox
-      - workspace-write
-      - "-"                   # read the prompt from stdin
-```
-
-**Claude Code** (researched against CLI `2.1.196`): `--print` enables
-non-interactive mode and reads the prompt from stdin; `--permission-mode
-acceptEdits` auto-applies file edits. Note the older `--max-turns` flag has been
-**removed** from current Claude Code — the current spend guard is
-`--max-budget-usd`. To restrict tools, use `--tools Read,Edit,Bash` (limits which
-built-in tools exist), `--allowedTools` (auto-approve specific calls without
-prompting, e.g. `--allowedTools "Bash(go build:*)"`), and `--disallowedTools`
-(deny scoped calls, e.g. `--disallowedTools "Bash(git push:*)"`). These three are
-distinct:
-
-```
---tools           restrict which tools are available at all
---allowedTools    allow selected tool calls without prompting
---disallowedTools deny tools or scoped tool calls
-```
-
-**Codex** (`codex exec`): the safe default for repairs is
-`--sandbox workspace-write` (edit files in the workspace, but not the wider
-host). The trailing `-` makes `codex exec` read the prompt from stdin. **Do not**
-use `--sandbox danger-full-access` for repairs.
-
-Exact flags evolve — run `claude --help` / `codex exec --help` and edit `args`
-directly to match your installed CLI.
-
-#### Safety
-
-This is **not** a sandbox. LunarForge controls the prompt and reruns
-verification, but the repair agent still runs **on your machine with whatever
-permissions you give it**. Prefer a conservative agent: for Claude, restrict
-tools and deny pushes/destructive commands; for Codex, prefer
-`--sandbox workspace-write`. Avoid `danger-full-access`, `bypassPermissions`, and
-`--dangerously-skip-permissions` unless you deliberately opt in.
-
-### Local loop
-
-`lf loop` chains the existing local commands into one repeatable sequence:
-
-```
-lf loop = verify → repair if needed → explain when verified
-```
-
-It is the one-command version of the manual ritual. Daily usage:
+Shell sketch:
 
 ```bash
-# manually drive Claude Code / Codex first; the agent edits files
-git add -A && git commit -m "..."
-
-lf loop
-
-# if successful:
-git diff
-git push
+result_file=$(mktemp)
+if lf verify --json --quiet >"$result_file"; then
+  # state is pass
+  hermes_open_pr "$result_file"
+else
+  # inspect state/reason/checks and choose retry, remediation, or escalation
+  hermes_handle_verification "$result_file"
+fi
 ```
 
-What it does, exactly:
+## Evidence layout
 
-```
-1. Run lf verify.
-2. If verify passes:
-   - run lf explain.
-   - result: ready for review.
-3. If verify fails:
-   - run lf repair (which reverifies after each attempt).
-   - re-check the latest evidence:
-     - if it is now fresh and passing: run lf explain → repaired and ready for review.
-     - if it is still failing: skip explain → blocked.
-```
-
-`lf loop` is **not autonomous feature work**:
-
-```
-It does not decide what to build.
-It does not start from a task description.
-It only checks and repairs the current working tree and .lunarforge.yml.
+```text
+.lf/
+  latest
+  runs/
+    <timestamp-and-random-id>/
+      evidence.json
+      summary.md
+      checks/
+        <id>.stdout.txt
+        <id>.stderr.txt
 ```
 
-The agent still does **not** get to declare success. The loop trusts only
-LunarForge evidence: after repair it re-reads the latest evidence and runs
-`lf explain` only when that evidence is fresh and passing. So after a successful
-loop, `lf status --require-fresh-passing` exits `0`; after a blocked loop it
-exits non-zero.
-
-**Flags:**
-
-- `lf loop --no-repair` — run verify; if it fails, stop (strict check, no AI repair).
-- `lf loop --no-explain` — run verify and repair if needed, but skip the explanation.
-- `lf loop --repair-attempts <n>` — override `repair.max_attempts` for this loop.
-- `lf loop --continue-on-failure` — forwarded to verify: run all commands even after one fails.
-- `lf loop --dry-run` — print the steps that would run without running verify, repair, or explain.
-
-**Artifacts.** Each loop writes a small summary that links to (does not duplicate)
-the underlying evidence and repair artifacts:
-
-```
-.lf/loops/<timestamp>/
-  summary.md     # human-readable: verify/repair/explain outcomes + final result
-  loop.json      # machine-readable: timings, attempts, evidence + explanation paths
-```
-
-The verify and repair steps still write their normal `.lf/runs/<timestamp>/`
-evidence; the loop summary just points at the final one.
-
-**Lower-control alternatives.** Reach for the individual commands when you want
-finer control:
-
-```bash
-lf verify     # only want proof the checks pass
-lf repair     # a gate already failed and you want the agent to fix it
-lf explain    # want a review summary of the current diff
-lf loop       # want the standard local sequence in one command
-```
-
-### `lf install-hooks`
-
-Installs a **pre-push** hook (not pre-commit — pre-commit is too noisy for WIP
-commits). The hook runs `lf status --require-fresh-passing`, so a push is blocked
-unless there is **fresh, passing evidence** for the current code. The hook only
-**reads** saved evidence; it does **not** re-run your tests, so it's fast.
-
-The hook is safe about existing hooks:
-
-- A previously LunarForge-managed hook is updated in place.
-- An existing **foreign** `pre-push` hook is **backed up** (e.g.
-  `pre-push.backup-20260630T142210`) before the new one is written, so nothing
-  is silently destroyed.
-- It honors `core.hooksPath` if you've configured one.
-- It is a POSIX `sh` script and is made executable on Unix-like systems. On
-  Windows, Git for Windows ships its own `sh`, so the hook runs there too.
-
-#### Hooks are local — GitHub Actions is the remote mirror
-
-A git pre-push hook is a **local** convenience and can be bypassed with
-`git push --no-verify`. It is not a server-side guarantee. The remote mirror —
-**GitHub Actions** running the same `.lunarforge.yml` checks — is what makes the
-gate authoritative. See [GitHub Actions mirror](#github-actions-mirror).
-
----
-
-## GitHub Actions mirror
-
-The local hook is **bypassable-but-useful**; GitHub Actions is **authoritative**.
-The remote workflow runs `lf ci`, which executes the *same* `verify.commands`
-from `.lunarforge.yml` — so there's a single source of truth and no drift
-between local and remote.
-
-```
-AGENTS.md / CLAUDE.md = reminders
-scripts/verify.sh     = repo ritual
-lf verify             = local proof
-lf status             = fresh/stale proof check
-pre-push hook         = local enforcement (bypassable with --no-verify)
-GitHub Actions        = remote backup (authoritative for PRs/branches)
-```
-
-The mental model for the three verify-shaped commands:
-
-```
-lf verify = local proof for the current working tree
-lf status = is the latest local proof still valid?
-lf ci     = remote proof for the current CI checkout
-```
-
-### Do not duplicate your commands
-
-The workflow **delegates** to LunarForge instead of re-listing your build/test
-commands:
-
-```yaml
-# ✅ Good — one source of truth
-- run: ./lf ci
-```
-
-```yaml
-# ❌ Bad — drifts from .lunarforge.yml
-- run: npm run lint
-- run: npm test
-- run: npm run build
-```
-
-### `lf ci`
-
-`lf ci` is the CI-friendly verification command. It loads `.lunarforge.yml`,
-confirms it's in a git repo, runs the configured `verify.commands`, and saves
-evidence under `.lf/runs/<timestamp>/` (so CI can upload it as an artifact).
-It exits `0` when all required commands pass and non-zero when any fails.
-
-Unlike `lf verify`, **`lf ci` does not care about pre-existing fresh local
-evidence** — in CI the current checkout *is* the source of truth, so it just
-runs the commands. When `GITHUB_ACTIONS=true`, it also emits an `::error::`
-annotation on failure and writes a short result table to the job summary.
-
-```
-LunarForge CI
-
-✅ lint passed       1.2s
-✅ test passed       5.4s
-
-Result:
-✅ CI verification passed
-
-Evidence:
-.lf/runs/2026-06-30T14-22-10/evidence.json
-```
-
-### `lf gen-actions`
-
-Generates `.github/workflows/lunarforge.yml`:
-
-```bash
-lf gen-actions                                       # default path, auto-detected mode
-lf gen-actions --install-mode source                 # build lf from ./cmd/lf
-lf gen-actions --install-mode go-install             # go install lf (consumer repos)
-lf gen-actions --install-mode go-install --install-ref v0.1.0
-lf gen-actions --output .github/workflows/x.yml      # custom path
-lf gen-actions --force                               # overwrite an existing file
-```
-
-It will **not** overwrite an existing workflow unless `--force` is passed, and
-prints the path plus next steps. The generated workflow:
-
-- runs on pull requests and pushes to `main`,
-- uses `concurrency` to cancel superseded runs,
-- uses minimal `permissions: contents: read`,
-- obtains `lf` according to the **install mode** (see below) and runs `lf ci`,
-- uploads `.lf/runs/**` as an artifact (`if: always()`).
-
-#### Install modes
-
-`lf gen-actions` needs to know how the workflow should get the `lf` binary.
-There are three modes:
-
-| Mode | For | How the workflow gets `lf` | Runs |
-|---|---|---|---|
-| `source` | the **LunarForge repo itself** | `go build -o lf ./cmd/lf` | `./lf ci` |
-| `go-install` | a **normal repo using LunarForge** | `go install <module>/cmd/lf@<ref>` | `lf ci` |
-| `custom` | release binaries / curl | your `install_commands` | `lf ci` |
-
-When `--install-mode` is omitted, the mode comes from
-`ci.github_actions.install.mode` in `.lunarforge.yml`, or is **auto-detected**:
-
-- if `./cmd/lf` **exists**, default to **source** mode (you're in LunarForge);
-- otherwise default to **go-install** mode (a consumer repo).
-
-For `go-install`, the module path is read from your `go.mod`
-(`<module>/cmd/lf`), falling back to
-`github.com/mitchelldurbincs/lunarforge/cmd/lf`. Override it with
-`--install-module`, and pin the version with `--install-ref`
-(`latest` by default).
-
-`custom` mode is configured in `.lunarforge.yml` and runs explicit install
-steps before `lf ci`:
-
-```yaml
-ci:
-  github_actions:
-    install:
-      mode: custom
-      install_commands:
-        - curl -L https://example.com/lf -o lf
-        - chmod +x lf
-        - sudo mv lf /usr/local/bin/lf
-```
-
-### Recommended setup
-
-```bash
-lf gen-actions
-git add .github/workflows/lunarforge.yml
-git commit -m "add LunarForge CI"
-git push
-```
-
-Then, in **GitHub → Settings → Branches → Branch protection rules**, require the
-**LunarForge / Verify** check to pass before merging. Local hooks can be skipped
-with `git push --no-verify`; a required GitHub check **cannot** be bypassed by a
-local CLI flag.
-
-### Important limitation: setup is your job
-
-The generated workflow is only a **remote mirror of your verify commands**. It
-does **not** install your project's dependencies or toolchain:
-
-- Node repos still need Node set up + `npm ci`.
-- Rust repos still need the Rust toolchain.
-- C++ repos may need CMake / a compiler.
-- Windows desktop repos may need `runs-on: windows-latest`.
-
-You have two options:
-
-1. **Edit the generated workflow** and add the setup steps you need (see the
-   ready-to-copy examples in [`examples/github-actions/`](examples/github-actions/)).
-2. **Use `ci.setup_commands`** in `.lunarforge.yml` to have a simple "Project
-   setup" step generated for you:
-
-   ```yaml
-   ci:
-     setup_commands:
-       - npm ci
-   ```
-
-Optional CI config (all fields are optional; defaults are shown):
-
-```yaml
-ci:
-  github_actions:
-    workflow_name: LunarForge   # name: of the workflow
-    runs_on: ubuntu-latest      # runner
-    timeout_minutes: 30         # job timeout
-    upload_artifacts: true      # upload .lf/runs/** as an artifact
-    install:
-      mode: go-install          # source | go-install | custom (default: auto-detect)
-      module: github.com/mitchelldurbincs/lunarforge/cmd/lf  # go-install target
-      ref: latest               # go-install version/ref
-      install_commands: []      # custom-mode install steps
-  setup_commands: []            # commands run before `lf ci`
-```
-
-Example workflows for common stacks:
-
-- [`lunarforge-source.yml`](examples/github-actions/lunarforge-source.yml) — **source mode** (developing LunarForge itself).
-- [`lunarforge-go-install.yml`](examples/github-actions/lunarforge-go-install.yml) — **go-install mode** (a normal repo using LunarForge).
-- [`lunarforge-basic.yml`](examples/github-actions/lunarforge-basic.yml) — self-contained source-mode workflow.
-- [`lunarforge-node.yml`](examples/github-actions/lunarforge-node.yml) — Node consumer: setup-node + `npm ci`.
-- [`lunarforge-windows.yml`](examples/github-actions/lunarforge-windows.yml) — `windows-latest` for C++/desktop.
-
----
-
-## Using generated workflows in consumer repos
-
-LunarForge enforces the same gate at three layers. Local is fast and
-bypassable; remote is authoritative; workflow generation is how you set the
-remote layer up:
-
-```
-local:
-  lf verify                          # prove the working tree passes
-  lf status --require-fresh-passing  # is the latest proof still valid?
-  pre-push hook                      # local enforcement (bypassable with --no-verify)
-
-remote:
-  lf ci inside GitHub Actions        # authoritative re-run of the same checks
-
-workflow generation:
-  lf gen-actions --install-mode source       # for LunarForge itself
-  lf gen-actions --install-mode go-install    # for normal repos
-```
-
-The distinction that makes generation actually usable in a real project is the
-**install mode**. The LunarForge repo contains `./cmd/lf` and can build `lf`
-from source. A normal project that *uses* LunarForge does **not** — so the
-generated workflow must install `lf` instead of building it.
-
-```bash
-# In the LunarForge repo (source is auto-detected because ./cmd/lf exists):
-lf gen-actions --install-mode source
-
-# In a normal project repo (go-install is auto-detected because there is no ./cmd/lf):
-lf gen-actions --install-mode go-install --install-ref latest
-```
-
-The go-install workflow runs `lf ci` (the binary is on `PATH`), never
-`./lf ci`, and never references `./cmd/lf` — so it does not assume the consumer
-repo contains LunarForge source. A self-contained example of a consumer repo
-lives in
-[`examples/fixture-consumer-basic/`](examples/fixture-consumer-basic/): it has a
-`.lunarforge.yml`, a `verify.sh`/`verify.ps1`, and a `src/hello.txt`, but **no
-`cmd/lf`**.
-
-### Limitation: `@latest` needs an installable module
-
-`go install <module>/cmd/lf@latest` only works once the LunarForge module is
-actually fetchable by `go install` at that ref — i.e. it's a public module (or
-reachable via your `GOPRIVATE`/proxy config) and the ref exists. Until tagged
-releases exist you have a few honest options:
-
-- pin a **branch or commit** instead of a tag, e.g.
-  `lf gen-actions --install-mode go-install --install-ref main` (Go module
-  pseudo-versions accept a branch name or commit SHA);
-- use **`custom` mode** to download a prebuilt binary in CI;
-- or, while iterating, vendor LunarForge into the consumer repo and use
-  `source` mode.
-
-When real releases exist, switch back to `--install-ref v0.1.0` (or `latest`)
-for a clean, version-pinned install.
-
----
-
-## Try it on the fixture
-
-A self-contained fixture under [`examples/fixture-basic/`](examples/fixture-basic/)
-proves the whole loop end-to-end with **no Node, CMake, or Claude required**. Its
-verify step just checks that `src/hello.txt` contains the expected text, and its
-explain command is a fake local script.
-
-```bash
-cp -r examples/fixture-basic /tmp/lf-demo && cd /tmp/lf-demo
-git init
-git add .
-git commit -m "fixture"
-
-lf verify                          # ✅ contents passed → evidence saved
-lf status                          # ✅ passed, ✅ fresh → ready to push
-lf status --require-fresh-passing  # exits 0
-lf explain                         # runs scripts/fake-explain.sh, saves explanation
-```
-
-Now change a tracked file and watch the evidence go stale:
-
-```bash
-echo "change" >> src/hello.txt
-lf status                          # ⚠️ stale → not ready to push
-lf status --require-fresh-passing  # exits non-zero
-```
-
-And see the pre-push gate in action:
-
-```bash
-lf install-hooks
-git add -A && git commit -m "change"
-git push        # blocked: evidence is stale for this commit
-lf verify       # re-prove for the new commit
-git push        # now allowed
-```
-
-### Repair fixture
-
-A second fixture under
-[`examples/fixture-repair-basic/`](examples/fixture-repair-basic/) demonstrates
-`lf repair` end-to-end with **no Claude or Codex required**. It ships in a
-**failing** state (`src/hello.txt` contains `broken`, but verify expects
-`hello lunarforge`) and configures fake repair agents: `fake_success` (edits the
-file so verify passes) and `fake_noop` (changes nothing).
-
-```bash
-cp -r examples/fixture-repair-basic /tmp/lf-repair-demo && cd /tmp/lf-repair-demo
-git init
-git add .
-git commit -m "fixture"
-
-lf verify                 # ❌ contents failed → failed evidence saved
-lf repair --dry-run       # shows the plan + agent command, writes nothing
-lf repair                 # fake agent fixes the file, verify reruns → ✅ passed
-lf status --require-fresh-passing   # exits 0
-
-# Exhaustion path with the no-op agent:
-git checkout src/hello.txt && printf 'broken\n' > src/hello.txt
-git commit -am break
-lf verify
-lf repair --agent fake_noop --attempts 2   # ❌ not repaired after 2 attempts
-```
-
-### Loop fixture
-
-A third fixture under
-[`examples/fixture-loop-basic/`](examples/fixture-loop-basic/) demonstrates
-`lf loop` end-to-end with **no Claude or Codex required**. Unlike the repair
-fixture it ships **passing**, so the immediate-success path works out of the box;
-break `src/hello.txt` to exercise repair and the blocked path.
-
-```bash
-# 1) Immediate success: verify passes, repair skipped, explain runs.
-cp -r examples/fixture-loop-basic /tmp/lf-loop-pass && cd /tmp/lf-loop-pass
-git init && git add . && git commit -m "fixture"
-lf loop                              # ✅ ready for review
-lf status --require-fresh-passing    # exits 0
-
-# 2) Repair success: break the file, let the fake agent fix it.
-cp -r examples/fixture-loop-basic /tmp/lf-loop-repair && cd /tmp/lf-loop-repair
-git init && git add . && git commit -m "fixture"
-echo broken > src/hello.txt
-lf loop                              # ❌ verify → repair → ✅ repaired and ready for review
-lf status --require-fresh-passing    # exits 0
-
-# 3) Blocked: switch to the no-op agent so repair can't fix it.
-cp -r examples/fixture-loop-basic /tmp/lf-loop-block && cd /tmp/lf-loop-block
-sed -i 's/agent: fake_success/agent: fake_noop/' .lunarforge.yml
-git init && git add . && git commit -m "fixture"
-echo broken > src/hello.txt
-lf loop --repair-attempts 2          # ❌ blocked, explain skipped
-lf status --require-fresh-passing    # exits non-zero
-```
-
----
-
-## Roadmap
-
-The core is deliberately small. The code is structured (config / gitutil /
-evidence / runner / explain / repair / hooks / actions) so these can be added
-later without a rewrite:
-
-- Richer explain modes and model-per-step selection.
-- Editable workflows beyond the fixed `lf loop` sequence (`lf loop` stays a
-  single, non-autonomous chain of the existing local commands and does not do
-  this yet).
-- Autonomous implementation from vague tasks (`lf repair` and `lf loop` stay
-  narrow — failed gates and the current working tree only — and do not do this).
-- Integrations (issue trackers, multi-agent orchestration).
-- Remote server / dashboard / multi-machine workers.
-
-The principle stays the same: **local verification + evidence + explanation,
-done well, with a narrow, opt-in repair of failed gates, a single boring loop
-that chains them, and a thin remote mirror of the same checks.**
-
----
-
-## Project layout
-
-```
-.lunarforge.yml         # LunarForge's own config — this repo gates itself
-scripts/verify.sh       # the repo's real ritual: gofmt + vet + build + test
-scripts/verify.ps1      # Windows twin of the above
-.github/workflows/ci.yml # remote backup: runs the same ritual on Linux + Windows
-cmd/lf/                 # CLI entrypoint and per-command files
-internal/
-  config/               # .lunarforge.yml loading + validation + starter template
-  gitutil/              # repo checks, status/diff, deterministic diff hash
-  evidence/             # evidence.json shape, read/write, latest pointer
-  runner/               # runs verify commands, captures output, writes summary
-  explain/              # builds the prompt, invokes the explain agent
-  repair/               # builds the repair prompt, invokes the repair agent
-  hooks/                # installs the pre-push hook
-  actions/              # generates the GitHub Actions workflow (lf gen-actions)
-cmd/lf/cmd_loop.go      # `lf loop`: composes verify → repair → explain
-cmd/lf/loop_summary.go  # loop summary artifact (.lf/loops/<ts>/)
-examples/
-  node/.lunarforge.yml
-  cpp/.lunarforge.yml
-  scripts/verify.sh
-  scripts/verify.ps1
-  github-actions/           # ready-to-copy CI workflows (basic / node / windows)
-  fixture-basic/            # self-contained end-to-end fixture (no external deps)
-    .lunarforge.yml
-    src/hello.txt
-    scripts/verify.sh
-    scripts/verify.ps1
-    scripts/fake-explain.sh
-  fixture-repair-basic/     # self-contained `lf repair` fixture (fake agents)
-    .lunarforge.yml
-    src/hello.txt           # ships "broken" so verify fails
-    scripts/verify.sh
-    scripts/verify.ps1
-    scripts/fake-repair-success.sh
-    scripts/fake-repair-noop.sh
-  fixture-loop-basic/       # self-contained `lf loop` fixture (fake agents)
-    .lunarforge.yml
-    src/hello.txt           # ships PASSING; break it to exercise repair/blocked
-    scripts/verify.sh
-    scripts/verify.ps1
-    scripts/fake-repair-success.sh
-    scripts/fake-repair-noop.sh
-    scripts/fake-explain.sh
-```
+Evidence and the `latest` pointer are written with temporary-file-and-rename
+replacement. Run IDs combine nanosecond timestamps with randomness so rapid or
+concurrent runs do not overwrite each other.
 
 ## Development
 
-LunarForge gates itself with LunarForge. The repo ships its own
-`.lunarforge.yml` and `scripts/verify.sh`, so the ritual you run locally is the
-ritual CI runs:
+LunarForge dogfoods one canonical script:
 
 ```bash
-./scripts/verify.sh      # gofmt + go vet + go build + go test
+./scripts/verify.sh
 ```
 
-Or drive it through the tool itself, once `lf` is on your `PATH`:
+It checks formatting, vet, build, and tests. The root GitHub workflow builds
+the branch's `lf` binary and executes `./lf verify --json`, then uploads the
+evidence.
 
-```bash
-go build -o lf ./cmd/lf
-./lf verify              # runs scripts/verify.sh, records evidence in .lf/runs/
-./lf status              # fresh + passing?
-./lf install-hooks       # gate your own pushes on it
-```
+Before publishing a release, run the canonical script, merge through CI, create
+an annotated semantic-version tag, and confirm a clean consumer repository can
+run both `go install ...@<tag>` and `lf verify --json`.
 
-`.github/workflows/ci.yml` runs the same script on Linux and its PowerShell twin
-(`scripts/verify.ps1`) on Windows, so the cross-platform claim is checked rather
-than asserted. The remote workflow is the backup; the local gate is the point.
+## Scope
+
+LunarForge intentionally does not contain agent selection, repair prompts,
+retry loops, issue-tracker integration, remote workers, dashboards, servers,
+or a plugin system. Those concerns belong to the orchestrator. The useful core
+is one repository policy, deterministic execution, trustworthy evidence, and a
+small versioned JSON interface.

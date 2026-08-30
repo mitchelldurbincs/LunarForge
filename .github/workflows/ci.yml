@@ -1,8 +1,5 @@
 name: CI
 
-# The remote backup for the local `lf verify` gate. Both run
-# scripts/verify.sh (or its PowerShell twin), so the two cannot drift.
-
 on:
   push:
     branches: [main]
@@ -14,27 +11,21 @@ permissions:
 
 jobs:
   verify:
-    name: verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-
-      # LunarForge claims cross-platform support (sh -c on POSIX, cmd /C on
-      # Windows), so the ritual runs on both.
-      - name: Run verify ritual (POSIX)
-        if: runner.os != 'Windows'
-        run: ./scripts/verify.sh
-
-      - name: Run verify ritual (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/verify.ps1
+      - name: Build branch binary
+        run: go build -o lf ./cmd/lf
+      - name: Verify with LunarForge
+        run: ./lf verify --json
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lunarforge-evidence
+          path: .lf/runs/**

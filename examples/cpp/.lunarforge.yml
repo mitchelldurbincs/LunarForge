@@ -1,8 +1,4 @@
 version: 1
-
-project:
-  name: imgui-tool
-
 verify:
   commands:
     - id: build_debug
@@ -11,15 +7,3 @@ verify:
       run: ctest --test-dir build --output-on-failure
     - id: build_release
       run: cmake --build build --config Release
-
-explain:
-  agent: claude
-  command: claude
-  args:
-    - --print
-    - --permission-mode
-    - plan
-
-evidence:
-  dir: .lf/runs
-  require_fresh_diff: true

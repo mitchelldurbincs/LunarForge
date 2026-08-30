@@ -3,82 +3,67 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, dir, contents string) string {
 	t.Helper()
 	path := filepath.Join(dir, FileName)
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
+		t.Fatal(err)
 	}
 	return path
 }
 
-func TestLoadValid(t *testing.T) {
+func TestStarterTemplateLoads(t *testing.T) {
 	dir := t.TempDir()
-	path := writeConfig(t, dir, StarterTemplate("demo"))
-
-	cfg, err := Load(path)
+	cfg, err := Load(writeConfig(t, dir, StarterTemplate()))
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.Version != 1 {
-		t.Errorf("version = %d, want 1", cfg.Version)
+	if cfg.Version != 1 || len(cfg.Verify.Commands) != 1 || cfg.Verify.Commands[0].ID != "verify" {
+		t.Fatalf("unexpected config: %+v", cfg)
 	}
-	if cfg.Project.Name != "demo" {
-		t.Errorf("project name = %q, want demo", cfg.Project.Name)
-	}
-	if len(cfg.Verify.Commands) != 1 || cfg.Verify.Commands[0].ID != "verify" {
-		t.Errorf("unexpected verify commands: %+v", cfg.Verify.Commands)
-	}
-	if cfg.Explain.Command != "claude" {
-		t.Errorf("explain command = %q, want claude", cfg.Explain.Command)
-	}
-	if cfg.EvidenceDir() != filepath.Join(".lf", "runs") {
-		t.Errorf("evidence dir = %q", cfg.EvidenceDir())
-	}
-	if !cfg.Evidence.RequireFreshDiff {
-		t.Errorf("require_fresh_diff should default to true in starter template")
+	if cfg.Verify.Commands[0].Timeout() != 30*time.Minute {
+		t.Fatalf("unexpected default timeout: %s", cfg.Verify.Commands[0].Timeout())
 	}
 }
 
-func TestLoadRejectsBadVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := writeConfig(t, dir, "version: 2\nproject:\n  name: x\nverify:\n  commands:\n    - id: a\n      run: echo hi\n")
-	if _, err := Load(path); err == nil {
-		t.Fatal("expected error for unsupported version")
+func TestLoadValidatesPolicy(t *testing.T) {
+	cases := []struct{ name, yaml, want string }{
+		{"version", "version: 2\nverify:\n  commands:\n    - id: test\n      run: true\n", "unsupported config version"},
+		{"commands", "version: 1\nverify:\n  commands: []\n", "at least one"},
+		{"duplicate", "version: 1\nverify:\n  commands:\n    - id: test\n      run: true\n    - id: test\n      run: true\n", "duplicate"},
+		{"unsafe id", "version: 1\nverify:\n  commands:\n    - id: ../test\n      run: true\n", "must match"},
+		{"negative timeout", "version: 1\nverify:\n  commands:\n    - id: test\n      run: true\n      timeout_seconds: -1\n", "cannot be negative"},
+		{"blank run", "version: 1\nverify:\n  commands:\n    - id: test\n      run: '   '\n", "run is required"},
+		{"unknown field", "version: 1\nproject: demo\nverify:\n  commands:\n    - id: test\n      run: true\n", "field project not found"},
+		{"multiple documents", "version: 1\nverify:\n  commands:\n    - id: test\n      run: true\n---\nversion: 1\n", "multiple YAML documents"},
 	}
-}
-
-func TestLoadRejectsNoCommands(t *testing.T) {
-	dir := t.TempDir()
-	path := writeConfig(t, dir, "version: 1\nproject:\n  name: x\nverify:\n  commands: []\n")
-	if _, err := Load(path); err == nil {
-		t.Fatal("expected error for empty verify.commands")
-	}
-}
-
-func TestLoadRejectsDuplicateID(t *testing.T) {
-	dir := t.TempDir()
-	path := writeConfig(t, dir, "version: 1\nproject:\n  name: x\nverify:\n  commands:\n    - id: a\n      run: echo 1\n    - id: a\n      run: echo 2\n")
-	if _, err := Load(path); err == nil {
-		t.Fatal("expected error for duplicate command id")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, t.TempDir(), tc.yaml))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 
 func TestFindWalksUp(t *testing.T) {
 	dir := t.TempDir()
-	writeConfig(t, dir, StarterTemplate("demo"))
-	nested := filepath.Join(dir, "a", "b", "c")
+	want := writeConfig(t, dir, StarterTemplate())
+	nested := filepath.Join(dir, "a", "b")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	found, err := Find(nested)
+	got, err := Find(nested)
 	if err != nil {
-		t.Fatalf("Find: %v", err)
+		t.Fatal(err)
 	}
-	if found != filepath.Join(dir, FileName) {
-		t.Errorf("Find returned %q", found)
+	if got != want {
+		t.Fatalf("Find = %q, want %q", got, want)
 	}
 }
