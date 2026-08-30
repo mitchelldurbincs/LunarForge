@@ -1,210 +1,57 @@
-// Package config loads and validates the .lunarforge.yml file that lives at the
-// root of a repository. The config describes how to verify the repo and how to
-// generate an explanation of the current diff.
+// Package config loads and validates the repository-local LunarForge policy.
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// FileName is the name of the config file LunarForge looks for.
-const FileName = ".lunarforge.yml"
+const (
+	FileName              = ".lunarforge.yml"
+	DefaultTimeoutSeconds = 30 * 60
+)
 
-// Config is the top-level shape of .lunarforge.yml.
+var commandIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// Config deliberately contains only repository quality policy. Agent choice,
+// retry behavior, evidence paths, and CI presentation belong to callers.
 type Config struct {
-	Version  int              `yaml:"version"`
-	Project  Project          `yaml:"project"`
-	Verify   Verify           `yaml:"verify"`
-	Explain  Explain          `yaml:"explain"`
-	Evidence Evidence         `yaml:"evidence"`
-	Repair   Repair           `yaml:"repair"`
-	Agents   map[string]Agent `yaml:"agents"`
-	CI       CI               `yaml:"ci"`
+	Version int    `yaml:"version"`
+	Verify  Verify `yaml:"verify"`
 
-	// path is the absolute path the config was loaded from. It is not part of
-	// the serialized YAML.
 	path string `yaml:"-"`
 }
 
-// Project holds project-level metadata.
-type Project struct {
-	Name string `yaml:"name"`
-}
-
-// Verify holds the list of commands that make up the repo's verification
-// ritual. They run in order during `lf verify`.
 type Verify struct {
 	Commands []Command `yaml:"commands"`
 }
 
-// Command is a single verify step.
+// Command is one required repository check. TimeoutSeconds defaults to 30
+// minutes when omitted.
 type Command struct {
-	ID  string `yaml:"id"`
-	Run string `yaml:"run"`
+	ID             string `yaml:"id"`
+	Run            string `yaml:"run"`
+	TimeoutSeconds int    `yaml:"timeout_seconds,omitempty"`
 }
 
-// Explain configures the external agent command used by `lf explain`.
-type Explain struct {
-	Agent   string   `yaml:"agent"`
-	Command string   `yaml:"command"`
-	Args    []string `yaml:"args"`
-}
-
-// Evidence configures where run evidence is stored.
-type Evidence struct {
-	Dir              string `yaml:"dir"`
-	RequireFreshDiff bool   `yaml:"require_fresh_diff"`
-}
-
-// Repair configures `lf repair`: how an AI agent is invoked to attempt the
-// smallest fix for a failed verification run. Repair is deliberately narrow —
-// it only responds to failed evidence and never declares its own success.
-type Repair struct {
-	// Enabled gates `lf repair`. It is a pointer so that an unset value defaults
-	// to enabled, while an explicit `enabled: false` refuses to run.
-	Enabled *bool `yaml:"enabled"`
-	// MaxAttempts is the number of agent+verify cycles to try. Defaults to 3.
-	MaxAttempts int `yaml:"max_attempts"`
-	// VerifyAfterEachAttempt reruns `lf verify` after each agent attempt. It is a
-	// pointer so an unset value defaults to true. When false, repair invokes the
-	// agent once and cannot confirm a fix (LunarForge is the only thing that can).
-	VerifyAfterEachAttempt *bool `yaml:"verify_after_each_attempt"`
-	// Agent names the entry in the agents map to use by default. The --agent flag
-	// overrides it.
-	Agent string `yaml:"agent"`
-	// MaxLogChars caps how many characters of each failed command's stdout/stderr
-	// are inlined into the prompt. Full logs always remain on disk. Defaults to
-	// 20000.
-	MaxLogChars int `yaml:"max_log_chars"`
-}
-
-// Agent is a single repair backend: an external command plus fixed arguments.
-// LunarForge writes the generated repair prompt to the command's stdin, so the
-// command must accept a prompt on stdin (e.g. `claude --print` or
-// `codex exec -`). The model intentionally stays small: no plugin system.
-type Agent struct {
-	// Backend is an informational label (e.g. "claude_code" or "codex"). It is
-	// recorded in artifacts but does not change how the command is invoked.
-	Backend string   `yaml:"backend"`
-	Command string   `yaml:"command"`
-	Args    []string `yaml:"args"`
-}
-
-// RepairEnabled reports whether repair is enabled (default true unless an
-// explicit `enabled: false` is set).
-func (c *Config) RepairEnabled() bool {
-	return c.Repair.Enabled == nil || *c.Repair.Enabled
-}
-
-// RepairMaxAttempts returns the configured attempt count, defaulting to 3.
-func (c *Config) RepairMaxAttempts() int {
-	if c.Repair.MaxAttempts <= 0 {
-		return 3
+func (c Command) Timeout() time.Duration {
+	seconds := c.TimeoutSeconds
+	if seconds == 0 {
+		seconds = DefaultTimeoutSeconds
 	}
-	return c.Repair.MaxAttempts
+	return time.Duration(seconds) * time.Second
 }
 
-// RepairVerifyAfterEach reports whether verify should run after each attempt
-// (default true).
-func (c *Config) RepairVerifyAfterEach() bool {
-	return c.Repair.VerifyAfterEachAttempt == nil || *c.Repair.VerifyAfterEachAttempt
-}
-
-// RepairMaxLogChars returns the per-log truncation limit, defaulting to 20000.
-func (c *Config) RepairMaxLogChars() int {
-	if c.Repair.MaxLogChars <= 0 {
-		return 20000
-	}
-	return c.Repair.MaxLogChars
-}
-
-// ResolveAgent returns the agent config for the given name, falling back to
-// repair.agent when name is empty. It errors clearly when no agent is named or
-// the named agent is missing/incomplete.
-func (c *Config) ResolveAgent(name string) (string, Agent, error) {
-	if name == "" {
-		name = c.Repair.Agent
-	}
-	if name == "" {
-		return "", Agent{}, fmt.Errorf("no repair agent configured: set repair.agent or pass --agent <name>")
-	}
-	a, ok := c.Agents[name]
-	if !ok {
-		return "", Agent{}, fmt.Errorf("repair agent %q is not defined under agents:", name)
-	}
-	if a.Command == "" {
-		return "", Agent{}, fmt.Errorf("repair agent %q has no command", name)
-	}
-	return name, a, nil
-}
-
-// CI configures the optional remote CI mirror. It is entirely optional —
-// `lf ci` and `lf gen-actions` work with sensible defaults when this section is
-// absent. The verify commands remain the single source of truth; CI only
-// controls how the generated workflow wraps them.
-type CI struct {
-	GitHubActions GitHubActions `yaml:"github_actions"`
-	// SetupCommands are optional shell commands run before `lf ci` in the
-	// generated workflow (e.g. "npm ci"). They install project dependencies that
-	// GitHub Actions cannot infer. Emitted as a single "Project setup" step.
-	SetupCommands []string `yaml:"setup_commands"`
-}
-
-// GitHubActions holds the knobs for the generated GitHub Actions workflow. Every
-// field is optional; zero values fall back to the generator defaults.
-type GitHubActions struct {
-	Enabled        bool   `yaml:"enabled"`
-	WorkflowName   string `yaml:"workflow_name"`
-	RunsOn         string `yaml:"runs_on"`
-	TimeoutMinutes int    `yaml:"timeout_minutes"`
-	// UploadArtifacts is a pointer so an unset value defaults to true (upload
-	// evidence), while an explicit `false` disables the upload step.
-	UploadArtifacts *bool `yaml:"upload_artifacts"`
-	// Install controls how the generated workflow obtains the `lf` binary. When
-	// the whole section is absent, the generator auto-detects: a repo containing
-	// ./cmd/lf (LunarForge itself) defaults to source mode, any other repo
-	// defaults to go-install mode.
-	Install Install `yaml:"install"`
-}
-
-// Install describes how the generated GitHub Actions workflow gets the `lf`
-// binary. It is optional; an empty Mode triggers auto-detection. The three
-// modes are:
-//
-//   - "source":     build `lf` from ./cmd/lf in this repo (LunarForge itself).
-//   - "go-install": `go install <Module>@<Ref>` (a normal repo using LunarForge).
-//   - "custom":     run explicit Commands that put `lf` on PATH.
-type Install struct {
-	Mode string `yaml:"mode"`
-	// Module is the `go install` target for go-install mode (e.g.
-	// "github.com/mitchelldurbincs/lunarforge/cmd/lf"). When empty the generator
-	// derives it from go.mod, falling back to the canonical LunarForge path.
-	Module string `yaml:"module"`
-	// Ref is the version/ref appended after @ for go-install mode (e.g. "latest"
-	// or "v0.1.0"). Empty means "latest".
-	Ref string `yaml:"ref"`
-	// Commands are the explicit install steps for custom mode. They must leave an
-	// `lf` binary on PATH. Ignored unless Mode is "custom".
-	Commands []string `yaml:"install_commands"`
-}
-
-// Path returns the absolute path the config was loaded from.
 func (c *Config) Path() string { return c.path }
 
-// EvidenceDir returns the evidence directory, defaulting to ".lf/runs" when not
-// configured.
-func (c *Config) EvidenceDir() string {
-	if c.Evidence.Dir == "" {
-		return filepath.Join(".lf", "runs")
-	}
-	return c.Evidence.Dir
-}
-
-// Load reads and validates the config from the given path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -212,8 +59,17 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		return nil, fmt.Errorf("parsing %s: multiple YAML documents are not supported", path)
 	}
 
 	abs, err := filepath.Abs(path)
@@ -221,15 +77,12 @@ func Load(path string) (*Config, error) {
 		abs = path
 	}
 	cfg.path = abs
-
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
 }
 
-// Find locates .lunarforge.yml by walking up from startDir to the filesystem
-// root. It returns the path to the config file, or an error if none is found.
 func Find(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -248,7 +101,6 @@ func Find(startDir string) (string, error) {
 	}
 }
 
-// LoadFromDir finds and loads the config starting at startDir.
 func LoadFromDir(startDir string) (*Config, error) {
 	path, err := Find(startDir)
 	if err != nil {
@@ -266,11 +118,14 @@ func (c *Config) validate() error {
 	}
 	seen := map[string]bool{}
 	for i, cmd := range c.Verify.Commands {
-		if cmd.ID == "" {
-			return fmt.Errorf("verify.commands[%d].id is required", i)
+		if !commandIDPattern.MatchString(cmd.ID) {
+			return fmt.Errorf("verify.commands[%d].id %q must match %s", i, cmd.ID, commandIDPattern)
 		}
-		if cmd.Run == "" {
+		if strings.TrimSpace(cmd.Run) == "" {
 			return fmt.Errorf("verify.commands[%d] (%s).run is required", i, cmd.ID)
+		}
+		if cmd.TimeoutSeconds < 0 {
+			return fmt.Errorf("verify.commands[%d] (%s).timeout_seconds cannot be negative", i, cmd.ID)
 		}
 		if seen[cmd.ID] {
 			return fmt.Errorf("duplicate verify command id %q", cmd.ID)

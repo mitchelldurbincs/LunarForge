@@ -45,8 +45,6 @@ func newTestRepo(t *testing.T, configYAML string) string {
 }
 
 const passingConfig = `version: 1
-project:
-  name: ci-test
 verify:
   commands:
     - id: ok
@@ -54,26 +52,12 @@ verify:
 `
 
 const failingConfig = `version: 1
-project:
-  name: ci-test
 verify:
   commands:
     - id: ok
       run: "true"
     - id: bad
       run: "exit 7"
-`
-
-// setupConfig adds a ci.setup_commands entry so gen-actions emits a "Project
-// setup" step.
-const setupConfig = `version: 1
-project:
-  name: ci-test
-verify:
-  commands:
-    - id: ok
-      run: "true"
-ci:
-  setup_commands:
-    - npm ci
+    - id: later
+      run: "echo should-not-run"
 `

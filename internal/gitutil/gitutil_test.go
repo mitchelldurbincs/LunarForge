@@ -58,13 +58,26 @@ func TestDiffHashChangesWithWorkingTree(t *testing.T) {
 		t.Error("hash should change after adding an untracked file")
 	}
 
+	// Untracked contents, not merely the pathname in porcelain status, are
+	// part of the fingerprint.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("different\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h1changed, err := DiffHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1changed == h1 {
+		t.Error("hash should change when untracked file contents change")
+	}
+
 	// Staging the file changes the cached diff -> hash changes again.
 	run(dir, "add", "a.txt")
 	h2, err := DiffHash(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h1 == h2 {
+	if h1changed == h2 {
 		t.Error("hash should change after staging the file")
 	}
 

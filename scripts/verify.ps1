@@ -1,6 +1,6 @@
 # LunarForge's own verify ritual (Windows / PowerShell) — this repo dogfooding
-# itself. Mirrors scripts/verify.sh. Point verify.commands at this script in
-# .lunarforge.yml when developing LunarForge on Windows.
+# itself. Mirrors scripts/verify.sh for developers who explicitly configure a
+# Windows repository policy.
 $ErrorActionPreference = "Stop"
 
 # $ErrorActionPreference does not make native commands throw, so every `go`

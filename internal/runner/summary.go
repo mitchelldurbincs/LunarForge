@@ -14,18 +14,24 @@ import (
 func writeSummary(runDir string, ev *evidence.Evidence) error {
 	var b strings.Builder
 	b.WriteString("# LunarForge Verification Summary\n\n")
-	fmt.Fprintf(&b, "Result: %s\n\n", plainResult(ev.Result))
+	fmt.Fprintf(&b, "State: %s\n", ev.Result)
+	fmt.Fprintf(&b, "Reason: %s\n\n", ev.Reason)
 
 	b.WriteString("## Git\n\n")
 	fmt.Fprintf(&b, "- Branch: %s\n", ev.Git.Branch)
 	fmt.Fprintf(&b, "- HEAD: %s\n", ev.Git.Head)
-	fmt.Fprintf(&b, "- Diff hash: %s\n\n", ev.DiffHash)
+	fmt.Fprintf(&b, "- Fingerprint before checks: %s\n", ev.DiffHash)
+	fmt.Fprintf(&b, "- Fingerprint after checks: %s\n", ev.FinalDiffHash)
+	fmt.Fprintf(&b, "- Dirty at start: %t\n\n", ev.Git.Dirty)
 
 	b.WriteString("## Commands\n\n")
 	b.WriteString("| Command | Result | Duration | Logs |\n")
 	b.WriteString("|---|---|---:|---|\n")
 	for _, c := range ev.Commands {
-		logs := fmt.Sprintf("[stdout](%s) / [stderr](%s)", c.StdoutPath, c.StderrPath)
+		logs := "—"
+		if c.StdoutPath != "" {
+			logs = fmt.Sprintf("[stdout](%s) / [stderr](%s)", c.StdoutPath, c.StderrPath)
+		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n",
 			c.ID, plainResult(c.Result), fmtSeconds(c.DurationMs), logs)
 	}
@@ -38,10 +44,20 @@ func writeSummary(runDir string, ev *evidence.Evidence) error {
 }
 
 func plainResult(result string) string {
-	if result == evidence.ResultPassed {
+	switch result {
+	case evidence.ResultPassed:
 		return "passed"
+	case evidence.ResultFailed:
+		return "failed"
+	case evidence.ResultBlocked:
+		return "blocked"
+	case evidence.ResultSkipped:
+		return "skipped"
+	case evidence.ResultStale:
+		return "stale"
+	default:
+		return result
 	}
-	return "failed"
 }
 
 func fmtSeconds(ms int64) string {

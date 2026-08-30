@@ -1,87 +1,132 @@
 package evidence
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestNewRunID(t *testing.T) {
-	tm := time.Date(2026, 6, 30, 14, 22, 10, 0, time.UTC)
-	if got := NewRunID(tm); got != "2026-06-30T14-22-10" {
-		t.Errorf("NewRunID = %q", got)
+func validEvidence(runID string) *Evidence {
+	return &Evidence{
+		Version: SchemaVersion, RunID: runID,
+		Result: ResultPassed, Reason: ReasonChecksPassed,
+		DiffHash: "sha256:abc", FinalDiffHash: "sha256:abc",
+		Commands: []Command{{
+			ID: "test", Result: ResultPassed, Reason: ReasonChecksPassed,
+			StdoutPath: "checks/test.stdout.txt", StderrPath: "checks/test.stderr.txt",
+		}},
 	}
 }
 
-func TestWriteLoadLatest(t *testing.T) {
-	root := t.TempDir()
-	evidenceDir := filepath.Join(root, ".lf", "runs")
-
-	tm := time.Date(2026, 6, 30, 14, 22, 10, 0, time.UTC)
-	runID := NewRunID(tm)
-	runDir := RunDir(evidenceDir, runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+func writeLogs(t *testing.T, runDir string) {
+	t.Helper()
+	dir := filepath.Join(runDir, "checks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	ev := &Evidence{
-		Version:  SchemaVersion,
-		Project:  "demo",
-		RunID:    runID,
-		Result:   ResultPassed,
-		DiffHash: "sha256:abc",
-		Commands: []Command{{ID: "test", Run: "go test", Result: ResultPassed}},
+	for _, name := range []string{"test.stdout.txt", "test.stderr.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := Write(evidenceDir, runDir, ev); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+}
 
-	// latest pointer should exist next to runs/.
-	if _, err := os.Stat(filepath.Join(root, ".lf", "latest")); err != nil {
-		t.Fatalf("latest pointer missing: %v", err)
+func TestNewRunIDIsUniqueAtSameInstant(t *testing.T) {
+	now := time.Date(2026, 6, 30, 14, 22, 10, 0, time.UTC)
+	a, b := NewRunID(now), NewRunID(now)
+	if a == b {
+		t.Fatalf("run IDs collided: %q", a)
 	}
+	if !validRunID(a) || !validRunID(b) {
+		t.Fatalf("invalid run IDs: %q %q", a, b)
+	}
+}
 
-	loaded, dir, err := LoadLatest(evidenceDir)
+func TestWriteAndLoadLatest(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), ".lf", "runs")
+	runID := NewRunID(time.Now())
+	runDir := RunDir(evidenceDir, runID)
+	writeLogs(t, runDir)
+	if err := Write(evidenceDir, runDir, validEvidence(runID)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, gotDir, err := LoadLatest(evidenceDir)
 	if err != nil {
-		t.Fatalf("LoadLatest: %v", err)
+		t.Fatal(err)
 	}
-	if dir != runDir {
-		t.Errorf("run dir = %q, want %q", dir, runDir)
+	if gotDir != runDir || loaded.DiffHash != "sha256:abc" || !loaded.Passed() {
+		t.Fatalf("loaded mismatch: dir=%q evidence=%+v", gotDir, loaded)
 	}
-	if loaded.DiffHash != "sha256:abc" || !loaded.Passed() {
-		t.Errorf("loaded evidence mismatch: %+v", loaded)
+	if data, err := os.ReadFile(filepath.Join(filepath.Dir(evidenceDir), "latest")); err != nil || string(data) != runID+"\n" {
+		t.Fatalf("latest pointer = %q, %v", data, err)
+	}
+}
+
+func TestLoadLatestDistinguishesMissingAndCorrupt(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), ".lf", "runs")
+	if _, _, err := LoadLatest(evidenceDir); !errors.Is(err, ErrNoEvidence) {
+		t.Fatalf("missing error = %v", err)
+	}
+	runID := NewRunID(time.Now())
+	if err := os.MkdirAll(RunDir(evidenceDir, runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(evidenceDir), "latest"), []byte(runID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(RunDir(evidenceDir, runID), "evidence.json"), []byte("{bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadLatest(evidenceDir); err == nil || errors.Is(err, ErrNoEvidence) {
+		t.Fatalf("corrupt evidence error = %v", err)
 	}
 }
 
 func TestArtifactExcludes(t *testing.T) {
 	repo := filepath.FromSlash("/repo")
 	if got := ArtifactExcludes(repo, filepath.Join(repo, ".lf", "runs")); len(got) != 1 || got[0] != ".lf" {
-		t.Errorf("default layout: got %v, want [.lf]", got)
-	}
-	// Evidence dir directly under repo -> exclude it (parent is repo root).
-	if got := ArtifactExcludes(repo, filepath.Join(repo, "evidence")); len(got) != 1 || got[0] != "evidence" {
-		t.Errorf("flat layout: got %v, want [evidence]", got)
-	}
-	// Evidence dir == repo root -> no safe exclude.
-	if got := ArtifactExcludes(repo, repo); got != nil {
-		t.Errorf("repo-root evidence dir: got %v, want nil", got)
+		t.Fatalf("got %v, want [.lf]", got)
 	}
 }
 
-func TestLatestRunIDFallbackScan(t *testing.T) {
-	evidenceDir := t.TempDir()
-	for _, id := range []string{"2026-06-30T10-00-00", "2026-06-30T12-00-00"} {
-		if err := os.MkdirAll(RunDir(evidenceDir, id), 0o755); err != nil {
-			t.Fatal(err)
-		}
+func TestLoadRejectsUnsafeEvidencePaths(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), ".lf", "runs")
+	runID := NewRunID(time.Now())
+	ev := validEvidence(runID)
+	ev.Commands[0].StdoutPath = "../../secret"
+	if err := Write(evidenceDir, RunDir(evidenceDir, runID), ev); err == nil {
+		t.Fatal("expected unsafe log path to be rejected")
 	}
-	// No latest pointer -> should pick the lexically-newest dir.
-	got, err := LatestRunID(evidenceDir)
-	if err != nil {
+	if validRunID("..") {
+		t.Fatal("parent directory must not be a valid run ID")
+	}
+}
+
+func TestLoadRejectsMissingLogs(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), ".lf", "runs")
+	runID := NewRunID(time.Now())
+	runDir := RunDir(evidenceDir, runID)
+	writeLogs(t, runDir)
+	if err := Write(evidenceDir, runDir, validEvidence(runID)); err != nil {
 		t.Fatal(err)
 	}
-	if got != "2026-06-30T12-00-00" {
-		t.Errorf("LatestRunID = %q", got)
+	if err := os.Remove(filepath.Join(runDir, "checks", "test.stdout.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(runDir); err == nil {
+		t.Fatal("expected missing log to make evidence corrupt")
+	}
+}
+
+func TestWriteRejectsInconsistentStateAndChecks(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), ".lf", "runs")
+	runID := NewRunID(time.Now())
+	ev := validEvidence(runID)
+	ev.Commands[0].Result = ResultFailed
+	ev.Commands[0].Reason = ReasonCheckFailed
+	if err := Write(evidenceDir, RunDir(evidenceDir, runID), ev); err == nil {
+		t.Fatal("passing evidence must not contain a failed check")
 	}
 }

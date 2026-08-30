@@ -1,46 +1,55 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/evidence"
+	"github.com/mitchelldurbincs/lunarforge/internal/gitutil"
 )
 
 func cmdStatus(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	requireFresh := fs.Bool("require-fresh-passing", false, "exit non-zero unless fresh, passing evidence exists (used by the pre-push hook)")
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	requireFresh := fs.Bool("require-fresh-passing", false, "exit non-zero unless fresh passing evidence exists")
 	strict := fs.Bool("strict", false, "alias of --require-fresh-passing")
-	asJSON := fs.Bool("json", false, "print machine-readable JSON instead of text")
+	asJSON := fs.Bool("json", false, "print the stable machine-readable result")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: lf status [--require-fresh-passing] [--json]\n\n"+
-			"Reports whether the latest evidence is fresh and passing.\n"+
-			"With --require-fresh-passing, exits non-zero unless the repo is ready to push.\n")
+		fmt.Fprintln(os.Stderr, "Usage: lf status [--json] [--require-fresh-passing]")
 	}
 	if err := fs.Parse(args); err != nil {
-		return err
+		return &exitError{code: 2, message: err.Error()}
 	}
-	enforce := *requireFresh || *strict
 
 	l, err := load()
 	if err != nil {
+		if *asJSON {
+			writeJSON(jsonFailure("status", evidence.ResultBlocked, evidence.ReasonConfigInvalid, err))
+			return &exitError{code: 2}
+		}
 		return err
 	}
-
 	currentHash, err := l.currentDiffHash()
 	if err != nil {
+		if *asJSON {
+			writeJSON(jsonFailure("status", evidence.ResultError, evidence.ReasonInternalError, err))
+			return &exitError{code: 3}
+		}
 		return err
 	}
 
-	// Tolerate "no evidence" — that is a valid (not-ready) state, not an error.
-	var (
-		ev     *evidence.Evidence
-		runDir string
-	)
-	if e, dir, lerr := evidence.LoadLatest(l.evidenceDir); lerr == nil {
-		ev, runDir = e, dir
+	ev, runDir, loadErr := evidence.LoadLatest(l.evidenceDir)
+	if loadErr != nil && !errors.Is(loadErr, evidence.ErrNoEvidence) {
+		if *asJSON {
+			writeJSON(jsonFailure("status", evidence.ResultError, evidence.ReasonEvidenceCorrupt, loadErr))
+			return &exitError{code: 3}
+		}
+		return loadErr
+	}
+	if errors.Is(loadErr, evidence.ErrNoEvidence) {
+		ev = nil
 	}
 	r := evidence.Evaluate(ev, currentHash)
 	if runDir != "" {
@@ -48,13 +57,34 @@ func cmdStatus(args []string) error {
 	}
 
 	if *asJSON {
-		printStatusJSON(r)
+		if ev == nil {
+			info, _ := gitutil.Snapshot(l.repoDir)
+			out := JSONResult{
+				SchemaVersion: resultSchemaVersion,
+				Command:       "status",
+				State:         r.State(),
+				Reason:        r.Reason(),
+				Repository: JSONRepository{
+					Root:        l.repoDir,
+					Branch:      info.Branch,
+					Head:        info.Head,
+					Dirty:       info.Dirty,
+					Fingerprint: currentHash,
+				},
+			}
+			writeJSON(out)
+		} else {
+			writeJSON(jsonFromEvidence("status", l, ev, runDir, currentHash, r.State(), r.Reason()))
+		}
 	} else {
 		printStatusText(r)
 	}
 
-	if enforce && !r.Ready() {
-		return &exitError{code: 1}
+	// JSON is a programmatic contract, so its exit code always mirrors state.
+	if *asJSON || *requireFresh || *strict {
+		if code := exitCodeForState(r.State()); code != 0 {
+			return &exitError{code: code}
+		}
 	}
 	return nil
 }
@@ -62,53 +92,17 @@ func cmdStatus(args []string) error {
 func printStatusText(r evidence.Readiness) {
 	fmt.Println("LunarForge status")
 	fmt.Println()
-
-	fmt.Println("Latest evidence:")
-	switch {
-	case !r.HasEvidence:
-		fmt.Println("❌ none found")
-	case r.Passed:
-		fmt.Println("✅ passed")
-	default:
-		fmt.Println("❌ failed")
+	fmt.Printf("State: %s\n", r.State())
+	fmt.Printf("Reason: %s\n", r.Reason())
+	if r.EvidenceID != "" {
+		fmt.Printf("Run: %s\n", r.EvidenceID)
 	}
-
-	// Freshness only matters when passing evidence exists.
-	if r.HasEvidence && r.Passed {
-		fmt.Println()
-		fmt.Println("Freshness:")
-		if r.Fresh {
-			fmt.Println("✅ fresh for current diff")
-		} else {
-			fmt.Println("⚠️ stale — current diff changed after verification")
-		}
+	if r.EvidenceDir != "" {
+		fmt.Printf("Evidence: %s\n", r.EvidenceDir)
 	}
-
-	fmt.Println()
-	fmt.Println("Result:")
 	if r.Ready() {
-		fmt.Println("✅ ready to push")
+		fmt.Println("Result: ready")
 	} else {
-		fmt.Println("❌ not ready to push")
-		fmt.Println()
-		fmt.Println("Run:")
-		fmt.Println("lf verify")
+		fmt.Println("Result: not ready; run `lf verify`")
 	}
-}
-
-func printStatusJSON(r evidence.Readiness) {
-	out := map[string]any{
-		"has_evidence":       r.HasEvidence,
-		"passed":             r.Passed,
-		"fresh":              r.Fresh,
-		"ready":              r.Ready(),
-		"reason":             r.Reason(),
-		"run_id":             r.EvidenceID,
-		"run_dir":            r.EvidenceDir,
-		"current_diff_hash":  r.WantHash,
-		"evidence_diff_hash": r.HaveHash,
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(out)
 }

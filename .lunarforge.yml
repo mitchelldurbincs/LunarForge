@@ -1,33 +1,7 @@
 version: 1
 
-project:
-  name: lunarforge
-
-# LunarForge gating itself. `lf verify` here runs the same ritual CI runs, so
-# the local gate and the remote backup cannot drift.
 verify:
   commands:
     - id: verify
       run: ./scripts/verify.sh
-
-explain:
-  agent: claude
-  command: claude
-  args:
-    - --print
-    - --permission-mode
-    - plan
-
-evidence:
-  dir: .lf/runs
-  require_fresh_diff: true
-
-ci:
-  github_actions:
-    workflow_name: LunarForge
-    runs_on: ubuntu-latest
-    timeout_minutes: 30
-    upload_artifacts: true
-    install:
-      # This repo IS LunarForge, so build lf from ./cmd/lf rather than installing.
-      mode: source
+      timeout_seconds: 600

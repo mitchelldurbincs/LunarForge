@@ -10,7 +10,7 @@ import (
 )
 
 func cmdInit(args []string) error {
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	force := fs.Bool("force", false, "overwrite an existing .lunarforge.yml")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: lf init [--force]\n\nCreates .lunarforge.yml and .lf/ in the current directory.\n")
@@ -29,8 +29,7 @@ func cmdInit(args []string) error {
 		return fmt.Errorf("%s already exists (use --force to overwrite)", config.FileName)
 	}
 
-	projectName := filepath.Base(cwd)
-	if err := os.WriteFile(configPath, []byte(config.StarterTemplate(projectName)), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(config.StarterTemplate()), 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", config.FileName, err)
 	}
 
@@ -42,7 +41,11 @@ func cmdInit(args []string) error {
 	}
 	gitignore := filepath.Join(lfDir, ".gitignore")
 	if _, err := os.Stat(gitignore); os.IsNotExist(err) {
-		_ = os.WriteFile(gitignore, []byte("# LunarForge run evidence is local-only by default.\nruns/\nlatest\n"), 0o644)
+		if err := os.WriteFile(gitignore, []byte("# LunarForge artifacts are local-only.\n*\n!.gitignore\n"), 0o644); err != nil {
+			return fmt.Errorf("writing .lf/.gitignore: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking .lf/.gitignore: %w", err)
 	}
 
 	fmt.Println("LunarForge init")

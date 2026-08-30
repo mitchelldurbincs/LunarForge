@@ -8,7 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -16,6 +19,7 @@ import (
 type Info struct {
 	Branch          string
 	Head            string
+	Dirty           bool
 	StatusPorcelain string
 }
 
@@ -46,48 +50,20 @@ func Snapshot(dir string) (Info, error) {
 	return Info{
 		Branch:          strings.TrimSpace(branch),
 		Head:            strings.TrimSpace(head),
+		Dirty:           strings.TrimSpace(status) != "",
 		StatusPorcelain: status,
 	}, nil
 }
 
-// Status returns the porcelain status output.
-func Status(dir string) (string, error) {
-	return run(dir, "status", "--porcelain")
-}
-
-// Diff returns the human-readable working-tree + staged diff used for
-// explanations. It is intentionally not the same as the hash input.
-func Diff(dir string) (string, error) {
-	unstaged, err := run(dir, "diff")
-	if err != nil {
-		return "", err
-	}
-	staged, err := run(dir, "diff", "--cached")
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	if strings.TrimSpace(staged) != "" {
-		b.WriteString("# Staged changes (git diff --cached)\n")
-		b.WriteString(staged)
-		b.WriteString("\n")
-	}
-	if strings.TrimSpace(unstaged) != "" {
-		b.WriteString("# Unstaged changes (git diff)\n")
-		b.WriteString(unstaged)
-		b.WriteString("\n")
-	}
-	return b.String(), nil
-}
-
-// DiffHash computes a deterministic hash of the exact code that would be
-// pushed: the current HEAD commit plus any tracked/staged working-tree changes.
+// DiffHash computes a deterministic fingerprint of HEAD plus tracked, staged,
+// and untracked working-tree content.
 // It combines:
 //
 //	git rev-parse HEAD
 //	git diff --binary
 //	git diff --cached --binary
 //	git status --porcelain
+//	contents of every untracked, non-ignored file
 //
 // If HEAD advances, or tracked/staged changes change after `lf verify`, the
 // hash changes and evidence becomes stale. The returned value is prefixed with
@@ -136,7 +112,57 @@ func DiffHash(dir string, excludes ...string) (string, error) {
 		fmt.Fprintf(h, "%s:%d:", strings.Join(args, " "), len(out))
 		h.Write(out)
 	}
+	if err := hashUntracked(h, dir, excludes); err != nil {
+		return "", err
+	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// hashUntracked closes the freshness hole left by porcelain status: status
+// includes an untracked path but not its bytes, so editing the same untracked
+// file used to leave evidence looking fresh.
+func hashUntracked(h interface{ Write([]byte) (int, error) }, dir string, excludes []string) error {
+	args := []string{"ls-files", "--others", "--exclude-standard", "-z"}
+	if len(excludes) > 0 {
+		args = append(args, "--", ".")
+		for _, e := range excludes {
+			args = append(args, ":(exclude)"+e)
+		}
+	}
+	out, err := runBytes(dir, args...)
+	if err != nil {
+		return fmt.Errorf("git ls-files --others: %w", err)
+	}
+	var paths []string
+	for _, raw := range bytes.Split(out, []byte{0}) {
+		if len(raw) > 0 {
+			paths = append(paths, string(raw))
+		}
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		full := filepath.Join(dir, filepath.FromSlash(path))
+		info, err := os.Lstat(full)
+		if err != nil {
+			return fmt.Errorf("reading untracked file %s: %w", path, err)
+		}
+		var data []byte
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(full)
+			if err != nil {
+				return fmt.Errorf("reading untracked symlink %s: %w", path, err)
+			}
+			data = []byte(target)
+		} else {
+			data, err = os.ReadFile(full)
+			if err != nil {
+				return fmt.Errorf("reading untracked file %s: %w", path, err)
+			}
+		}
+		fmt.Fprintf(h, "untracked:%d:%s:mode:%s:size:%d:", len(path), path, info.Mode(), len(data))
+		h.Write(data)
+	}
+	return nil
 }
 
 func run(dir string, args ...string) (string, error) {

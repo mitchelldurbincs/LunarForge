@@ -14,103 +14,85 @@ import (
 
 func gitRepo(t *testing.T) string {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("shell commands in test assume a POSIX shell")
+	if _, err := exec.LookPath("git"); err != nil || runtime.GOOS == "windows" {
+		t.Skip("test needs git and a POSIX shell")
 	}
 	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "t@e.com"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
-	} {
-		c := exec.Command("git", args...)
-		c.Dir = dir
-		if out, err := c.CombinedOutput(); err != nil {
+	for _, args := range [][]string{{"init"}, {"config", "user.email", "t@e.com"}, {"config", "user.name", "t"}, {"commit", "--allow-empty", "-m", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	return dir
 }
 
-func TestRunPassesAndWritesEvidence(t *testing.T) {
-	dir := gitRepo(t)
-	cfg := &config.Config{
-		Version: 1,
-		Project: config.Project{Name: "demo"},
-		Verify: config.Verify{Commands: []config.Command{
-			{ID: "echo", Run: "echo hello"},
-			{ID: "true", Run: "true"},
-		}},
-	}
-	res, err := Run(cfg, Options{
-		RepoDir:     dir,
-		EvidenceDir: filepath.Join(dir, ".lf", "runs"),
-		Now:         time.Now(),
+func run(t *testing.T, dir string, commands ...config.Command) *Result {
+	t.Helper()
+	res, err := Run(&config.Config{Version: 1, Verify: config.Verify{Commands: commands}}, Options{
+		RepoDir: dir, EvidenceDir: filepath.Join(dir, evidence.DefaultDir), Now: time.Now(),
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !res.Evidence.Passed() {
-		t.Fatalf("expected passed, got %s", res.Evidence.Result)
-	}
-	if len(res.Evidence.Commands) != 2 {
-		t.Fatalf("expected 2 commands, got %d", len(res.Evidence.Commands))
-	}
-	// stdout file should contain the echo output.
-	out, err := os.ReadFile(filepath.Join(res.RunDir, "commands", "echo.stdout.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(out) != "hello\n" {
-		t.Errorf("stdout = %q", out)
+	return res
+}
+
+func TestRunPassesAndWritesEvidence(t *testing.T) {
+	dir := gitRepo(t)
+	res := run(t, dir, config.Command{ID: "echo", Run: "echo hello"}, config.Command{ID: "ok", Run: "true"})
+	if !res.Evidence.Passed() || len(res.Evidence.Commands) != 2 {
+		t.Fatalf("unexpected evidence: %+v", res.Evidence)
 	}
-	// summary + evidence + latest pointer exist.
-	for _, p := range []string{
-		filepath.Join(res.RunDir, "evidence.json"),
-		filepath.Join(res.RunDir, "summary.md"),
-		filepath.Join(dir, ".lf", "latest"),
-	} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("missing %s: %v", p, err)
+	out, err := os.ReadFile(filepath.Join(res.RunDir, "checks", "echo.stdout.txt"))
+	if err != nil || string(out) != "hello\n" {
+		t.Fatalf("stdout = %q, err=%v", out, err)
+	}
+	for _, name := range []string{"evidence.json", "summary.md"} {
+		if _, err := os.Stat(filepath.Join(res.RunDir, name)); err != nil {
+			t.Errorf("missing %s: %v", name, err)
 		}
 	}
 }
 
-func TestRunStopsOnFirstFailure(t *testing.T) {
+func TestRunRecordsSkippedChecks(t *testing.T) {
 	dir := gitRepo(t)
-	cfg := &config.Config{
-		Version: 1,
-		Project: config.Project{Name: "demo"},
-		Verify: config.Verify{Commands: []config.Command{
-			{ID: "ok", Run: "true"},
-			{ID: "bad", Run: "exit 3"},
-			{ID: "never", Run: "echo should-not-run"},
-		}},
+	res := run(t, dir,
+		config.Command{ID: "bad", Run: "exit 7"},
+		config.Command{ID: "later", Run: "echo should-not-run"},
+	)
+	if res.Evidence.Result != evidence.ResultFailed || len(res.Evidence.Commands) != 2 {
+		t.Fatalf("unexpected result: %+v", res.Evidence)
 	}
-	res, err := Run(cfg, Options{
-		RepoDir:     dir,
-		EvidenceDir: filepath.Join(dir, ".lf", "runs"),
-		Now:         time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	if got := res.Evidence.Commands[1]; got.Result != evidence.ResultSkipped || got.Reason != evidence.ReasonPreviousCheckFailed {
+		t.Fatalf("unexpected skipped record: %+v", got)
 	}
-	if res.Evidence.Passed() {
-		t.Fatal("expected failure")
+}
+
+func TestRunTimeoutIsBlocked(t *testing.T) {
+	dir := gitRepo(t)
+	res := run(t, dir, config.Command{ID: "slow", Run: "sleep 2", TimeoutSeconds: 1})
+	if res.Evidence.Result != evidence.ResultBlocked || res.Evidence.Reason != evidence.ReasonTimedOut {
+		t.Fatalf("unexpected timeout: %+v", res.Evidence)
 	}
-	if len(res.Evidence.Commands) != 2 {
-		t.Fatalf("expected stop after 2 commands, got %d", len(res.Evidence.Commands))
+}
+
+func TestRunMissingToolIsBlocked(t *testing.T) {
+	dir := gitRepo(t)
+	res := run(t, dir, config.Command{ID: "missing", Run: "lunarforge-command-that-does-not-exist"})
+	if res.Evidence.Result != evidence.ResultBlocked || res.Evidence.Reason != evidence.ReasonToolUnavailable {
+		t.Fatalf("unexpected missing-tool result: %+v", res.Evidence)
 	}
-	last := res.Evidence.Commands[1]
-	if last.ID != "bad" || last.Result != evidence.ResultFailed || last.ExitCode != 3 {
-		t.Errorf("unexpected failing command record: %+v", last)
+}
+
+func TestRunDetectsRepositoryMutation(t *testing.T) {
+	dir := gitRepo(t)
+	res := run(t, dir, config.Command{ID: "mutate", Run: "printf changed > generated.txt"})
+	if res.Evidence.Result != evidence.ResultStale || res.Evidence.Reason != evidence.ReasonSnapshotChanged {
+		t.Fatalf("mutation should stale evidence: %+v", res.Evidence)
 	}
-	// The third command's output file must not exist.
-	if _, err := os.Stat(filepath.Join(res.RunDir, "commands", "never.stdout.txt")); !os.IsNotExist(err) {
-		t.Error("third command should not have run")
+	if res.Evidence.DiffHash == res.Evidence.FinalDiffHash {
+		t.Fatal("pre/post fingerprints should differ")
 	}
 }
