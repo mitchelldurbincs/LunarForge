@@ -25,6 +25,15 @@ func IsRepo(dir string) bool {
 	return err == nil && strings.TrimSpace(out) == "true"
 }
 
+// Root resolves the working tree containing dir, including linked worktrees.
+func Root(dir string) (string, error) {
+	out, err := run(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("resolving repository root: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // Snapshot collects branch, HEAD, and porcelain status for evidence records.
 func Snapshot(dir string) (Info, error) {
 	if !IsRepo(dir) {

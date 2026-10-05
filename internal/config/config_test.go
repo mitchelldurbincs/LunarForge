@@ -82,3 +82,30 @@ func TestFindWalksUp(t *testing.T) {
 		t.Errorf("Find returned %q", found)
 	}
 }
+
+func TestFindStopsAtRepositoryBoundary(t *testing.T) {
+	parent := t.TempDir()
+	writeConfig(t, parent, StarterTemplate("outside"))
+	repo := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Find(repo); err == nil {
+		t.Fatal("must not discover config above repository")
+	}
+}
+
+func TestFindStopsAtLinkedWorktreeBoundary(t *testing.T) {
+	parent := t.TempDir()
+	writeConfig(t, parent, StarterTemplate("outside"))
+	repo := filepath.Join(parent, "worktree")
+	if err := os.Mkdir(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: elsewhere"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Find(repo); err == nil {
+		t.Fatal("must not discover config above worktree")
+	}
+}

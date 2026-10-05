@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/config"
 	"github.com/mitchelldurbincs/lunarforge/internal/evidence"
@@ -25,15 +26,26 @@ func load() (*loaded, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.LoadFromDir(cwd)
+	repoDir, err := gitutil.Root(cwd)
 	if err != nil {
 		return nil, err
 	}
-	// The repo root is the directory containing the config file.
-	repoDir := filepath.Dir(cfg.Path())
-
-	if !gitutil.IsRepo(repoDir) {
-		return nil, fmt.Errorf("%s is not inside a git repository", repoDir)
+	var cfg *config.Config
+	configPath, external := os.LookupEnv("LUNARFORGE_CONFIG")
+	if external {
+		cfg, err = config.Load(configPath)
+	} else {
+		cfg, err = config.LoadFromDir(cwd)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if external {
+		stateDir := filepath.Dir(cfg.EvidenceDir())
+		rel, relErr := filepath.Rel(repoDir, stateDir)
+		if !filepath.IsAbs(cfg.EvidenceDir()) || relErr != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return nil, fmt.Errorf("LUNARFORGE_CONFIG requires an absolute evidence.dir with its parent outside the repository")
+		}
 	}
 
 	evidenceDir := cfg.EvidenceDir()

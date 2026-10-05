@@ -15,6 +15,10 @@ import (
 // the initial contents of src/hello.txt ("broken" to start failing).
 func repairRepo(t *testing.T, hello string) string {
 	t.Helper()
+	t.Setenv("LUNARFORGE_CONFIG", "")
+	if err := os.Unsetenv("LUNARFORGE_CONFIG"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}

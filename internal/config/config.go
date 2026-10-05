@@ -229,7 +229,7 @@ func Load(path string) (*Config, error) {
 }
 
 // Find locates .lunarforge.yml by walking up from startDir to the filesystem
-// root. It returns the path to the config file, or an error if none is found.
+// root, stopping at a Git working-tree boundary. It returns the path to the config file, or an error if none is found.
 func Find(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -241,7 +241,8 @@ func Find(startDir string) (string, error) {
 			return candidate, nil
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		_, boundaryErr := os.Stat(filepath.Join(dir, ".git"))
+		if parent == dir || boundaryErr == nil {
 			return "", fmt.Errorf("no %s found in %s or any parent directory (run `lf init`)", FileName, startDir)
 		}
 		dir = parent

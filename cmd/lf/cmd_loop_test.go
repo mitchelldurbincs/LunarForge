@@ -15,6 +15,10 @@ import (
 // contents of src/hello.txt ("hello lunarforge" passes, anything else fails).
 func loopRepo(t *testing.T, hello, repairAgent string) string {
 	t.Helper()
+	t.Setenv("LUNARFORGE_CONFIG", "")
+	if err := os.Unsetenv("LUNARFORGE_CONFIG"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}

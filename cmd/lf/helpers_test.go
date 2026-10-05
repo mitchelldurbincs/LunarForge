@@ -14,6 +14,10 @@ import (
 // the runner tests' POSIX-shell assumptions.
 func newTestRepo(t *testing.T, configYAML string) string {
 	t.Helper()
+	t.Setenv("LUNARFORGE_CONFIG", "")
+	if err := os.Unsetenv("LUNARFORGE_CONFIG"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
