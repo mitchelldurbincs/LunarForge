@@ -42,7 +42,7 @@ func cmdInit(args []string) error {
 	}
 	gitignore := filepath.Join(lfDir, ".gitignore")
 	if _, err := os.Stat(gitignore); os.IsNotExist(err) {
-		_ = os.WriteFile(gitignore, []byte("# LunarForge run evidence is local-only by default.\nruns/\nlatest\n"), 0o644)
+		_ = os.WriteFile(gitignore, []byte("# LunarForge run artifacts (runs, latest, loops, and this file) are local-only.\n*\n"), 0o644)
 	}
 
 	fmt.Println("LunarForge init")

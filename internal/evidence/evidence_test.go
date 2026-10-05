@@ -3,13 +3,14 @@ package evidence
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestNewRunID(t *testing.T) {
 	tm := time.Date(2026, 6, 30, 14, 22, 10, 0, time.UTC)
-	if got := NewRunID(tm); got != "2026-06-30T14-22-10" {
+	if got := NewRunID(tm); !strings.HasPrefix(got, "2026-06-30T14-22-10.") {
 		t.Errorf("NewRunID = %q", got)
 	}
 }
@@ -73,6 +74,11 @@ func TestLatestRunIDFallbackScan(t *testing.T) {
 	evidenceDir := t.TempDir()
 	for _, id := range []string{"2026-06-30T10-00-00", "2026-06-30T12-00-00"} {
 		if err := os.MkdirAll(RunDir(evidenceDir, id), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"2026-06-30T10-00-00", "2026-06-30T12-00-00"} {
+		if err := os.WriteFile(filepath.Join(evidenceDir, id, "evidence.json"), []byte("{}"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}

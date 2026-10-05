@@ -4,6 +4,8 @@ package evidence
 // current repo diff hash. It is the single source of truth for whether the repo
 // is ready to push, shared by `lf status` and the pre-push hook.
 type Readiness struct {
+	Blocked     string // refusal independent of hash equality
+	ReusedFrom  string // immutable execution record applied to a rewritten commit
 	HasEvidence bool   // latest evidence exists and could be loaded
 	Passed      bool   // latest evidence result == passed
 	Fresh       bool   // evidence diff hash matches the current diff hash
@@ -16,12 +18,14 @@ type Readiness struct {
 // Ready reports whether the repo is ready to push: fresh, passing evidence
 // exists. This is the invariant the pre-push gate enforces.
 func (r Readiness) Ready() bool {
-	return r.HasEvidence && r.Passed && r.Fresh
+	return r.Blocked == "" && r.HasEvidence && r.Passed && r.Fresh
 }
 
 // Reason returns a short machine-stable reason code for the current state.
 func (r Readiness) Reason() string {
 	switch {
+	case r.Blocked != "":
+		return r.Blocked
 	case !r.HasEvidence:
 		return "no_evidence"
 	case !r.Passed:

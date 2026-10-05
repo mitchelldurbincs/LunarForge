@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/config"
@@ -21,6 +19,8 @@ import (
 type Options struct {
 	// RepoDir is the repository root (working directory for commands).
 	RepoDir string
+	// Commit selects isolated, clean HEAD verification; empty preserves diff mode.
+	Commit string
 	// EvidenceDir is the resolved absolute evidence directory.
 	EvidenceDir string
 	// Now is the run's start time (UTC recommended). Injected for testability.
@@ -40,6 +40,78 @@ type Result struct {
 
 // Run executes the verify commands described by cfg and writes evidence.
 func Run(cfg *config.Config, opts Options) (*Result, error) {
+	ev, err := captureRun(cfg, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var identity *evidence.Identity
+	sourceDir := opts.RepoDir
+	if opts.Commit != "" {
+		var cleanup func()
+		identity, opts.RepoDir, cleanup, err = prepareCommit(cfg, sourceDir, opts.Commit)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+	}
+
+	ev.RunID = evidence.NewRunID(ev.StartedAt)
+	runDir := evidence.RunDir(opts.EvidenceDir, ev.RunID)
+	cmdDir, err := createRunDir(opts.EvidenceDir, runDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if identity != nil {
+		ev.Git.Head = identity.Subject.Commit
+		ev.Git.StatusPorcelain = ""
+		ev.Mode = "commit"
+		ev.Identity = identity
+		ev.ExecutionDir = opts.RepoDir
+	}
+	overall := evidence.ResultPassed
+	for _, c := range cfg.Verify.Commands {
+		rec := runOne(opts, cmdDir, c)
+		ev.Commands = append(ev.Commands, rec)
+		if rec.Result != evidence.ResultPassed {
+			overall = evidence.ResultFailed
+			if !opts.KeepGoing {
+				break
+			}
+		}
+	}
+
+	if identity != nil && !verifySubject(cfg, sourceDir, opts.RepoDir, ev) {
+		overall = evidence.ResultFailed
+	}
+	ev.FinishedAt = time.Now().UTC()
+	ev.Result = overall
+
+	if err := writeSummary(runDir, ev); err != nil {
+		return nil, err
+	}
+	if err := evidence.Write(opts.EvidenceDir, runDir, ev); err != nil {
+		return nil, err
+	}
+	return &Result{Evidence: ev, RunDir: runDir}, nil
+}
+
+func createRunDir(evidenceDir, runDir string) (string, error) {
+	cmdDir := filepath.Join(runDir, "commands")
+	if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(runDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(cmdDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating run dir: %w", err)
+	}
+	return cmdDir, nil
+}
+
+func captureRun(cfg *config.Config, opts Options) (*evidence.Evidence, error) {
 	start := opts.Now
 	if start.IsZero() {
 		start = time.Now()
@@ -56,17 +128,9 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	runID := evidence.NewRunID(start)
-	runDir := evidence.RunDir(opts.EvidenceDir, runID)
-	cmdDir := filepath.Join(runDir, "commands")
-	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating run dir: %w", err)
-	}
-
-	ev := &evidence.Evidence{
+	return &evidence.Evidence{
 		Version:   evidence.SchemaVersion,
 		Project:   cfg.Project.Name,
-		RunID:     runID,
 		StartedAt: start,
 		DiffHash:  diffHash,
 		Git: evidence.Git{
@@ -74,110 +138,5 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 			Head:            gitInfo.Head,
 			StatusPorcelain: gitInfo.StatusPorcelain,
 		},
-	}
-
-	overall := evidence.ResultPassed
-	for _, c := range cfg.Verify.Commands {
-		rec := runOne(opts, cmdDir, c)
-		ev.Commands = append(ev.Commands, rec)
-		if rec.Result != evidence.ResultPassed {
-			overall = evidence.ResultFailed
-			if !opts.KeepGoing {
-				break
-			}
-		}
-	}
-
-	ev.FinishedAt = time.Now().UTC()
-	ev.Result = overall
-
-	if err := writeSummary(runDir, ev); err != nil {
-		return nil, err
-	}
-	if err := evidence.Write(opts.EvidenceDir, runDir, ev); err != nil {
-		return nil, err
-	}
-	return &Result{Evidence: ev, RunDir: runDir}, nil
-}
-
-func runOne(opts Options, cmdDir string, c config.Command) evidence.Command {
-	started := time.Now().UTC()
-	rec := evidence.Command{
-		ID:         c.ID,
-		Run:        c.Run,
-		StartedAt:  started,
-		StdoutPath: filepath.Join("commands", c.ID+".stdout.txt"),
-		StderrPath: filepath.Join("commands", c.ID+".stderr.txt"),
-	}
-
-	stdoutFile, err := os.Create(filepath.Join(cmdDir, c.ID+".stdout.txt"))
-	if err != nil {
-		return failRecord(rec, started, -1, fmt.Sprintf("could not create stdout file: %v", err))
-	}
-	defer stdoutFile.Close()
-	stderrFile, err := os.Create(filepath.Join(cmdDir, c.ID+".stderr.txt"))
-	if err != nil {
-		return failRecord(rec, started, -1, fmt.Sprintf("could not create stderr file: %v", err))
-	}
-	defer stderrFile.Close()
-
-	cmd := shellCommand(c.Run)
-	cmd.Dir = opts.RepoDir
-	if opts.Stream != nil {
-		cmd.Stdout = io.MultiWriter(stdoutFile, opts.Stream)
-		cmd.Stderr = io.MultiWriter(stderrFile, opts.Stream)
-	} else {
-		cmd.Stdout = stdoutFile
-		cmd.Stderr = stderrFile
-	}
-
-	runErr := cmd.Run()
-	finished := time.Now().UTC()
-	rec.FinishedAt = finished
-	rec.DurationMs = finished.Sub(started).Milliseconds()
-	rec.ExitCode = exitCode(runErr)
-	if runErr == nil {
-		rec.Result = evidence.ResultPassed
-	} else {
-		rec.Result = evidence.ResultFailed
-	}
-	return rec
-}
-
-func failRecord(rec evidence.Command, started time.Time, code int, msg string) evidence.Command {
-	finished := time.Now().UTC()
-	rec.FinishedAt = finished
-	rec.DurationMs = finished.Sub(started).Milliseconds()
-	rec.ExitCode = code
-	rec.Result = evidence.ResultFailed
-	_ = msg
-	return rec
-}
-
-// shellCommand wraps a command string in the platform shell so that constructs
-// like "npm run lint" or "./scripts/verify.sh" work as written in config.
-func shellCommand(run string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
-		return exec.Command("cmd", "/C", run)
-	}
-	return exec.Command("sh", "-c", run)
-}
-
-func exitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var exitErr *exec.ExitError
-	if ok := asExitError(err, &exitErr); ok {
-		return exitErr.ExitCode()
-	}
-	return -1
-}
-
-func asExitError(err error, target **exec.ExitError) bool {
-	if e, ok := err.(*exec.ExitError); ok {
-		*target = e
-		return true
-	}
-	return false
+	}, nil
 }

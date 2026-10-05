@@ -164,7 +164,8 @@ func TestLoopRunsRepairThenExplainAfterSuccess(t *testing.T) {
 	if got := readFile(t, filepath.Join(dir, "src", "hello.txt")); !strings.Contains(got, "hello lunarforge") {
 		t.Errorf("file not repaired: %q", got)
 	}
-	requireStatusReady(t, dir, true)
+	// Passing repair evidence describes dirty files, not the broken HEAD.
+	requireStatusReady(t, dir, false)
 }
 
 func TestLoopBlockedWhenRepairNoops(t *testing.T) {

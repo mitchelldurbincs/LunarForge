@@ -15,6 +15,7 @@ func cmdVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	continueOnFailure := fs.Bool("continue-on-failure", false, "run all commands even after a failure")
 	keepGoing := fs.Bool("keep-going", false, "alias of --continue-on-failure")
+	commit := fs.String("commit", "", "verify clean HEAD in an isolated checkout")
 	quiet := fs.Bool("quiet", false, "do not stream command output to the terminal")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: lf verify [--continue-on-failure] [--quiet]\n\nRuns verify commands and saves evidence tied to the current diff.\n")
@@ -34,6 +35,7 @@ func cmdVerify(args []string) error {
 
 	opts := runner.Options{
 		RepoDir:     l.repoDir,
+		Commit:      *commit,
 		EvidenceDir: l.evidenceDir,
 		Now:         time.Now(),
 		KeepGoing:   keepRunning,
@@ -70,6 +72,9 @@ func cmdVerify(args []string) error {
 		fmt.Println("✅ ready locally")
 	} else {
 		fmt.Println("❌ not ready")
+		if ev.SubjectError != "" {
+			fmt.Println(ev.SubjectError)
+		}
 	}
 
 	// On failure, point directly at the failing command and its logs.

@@ -5,6 +5,7 @@
 package evidence
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,15 +25,21 @@ const (
 
 // Evidence is the top-level evidence.json document.
 type Evidence struct {
-	Version    int       `json:"version"`
-	Project    string    `json:"project"`
-	RunID      string    `json:"run_id"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at"`
-	Result     string    `json:"result"`
-	DiffHash   string    `json:"diff_hash"`
-	Git        Git       `json:"git"`
-	Commands   []Command `json:"commands"`
+	Version         int       `json:"version"`
+	Project         string    `json:"project"`
+	RunID           string    `json:"run_id"`
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at"`
+	Result          string    `json:"result"`
+	DiffHash        string    `json:"diff_hash"`
+	Git             Git       `json:"git"`
+	Commands        []Command `json:"commands"`
+	Mode            string    `json:"mode,omitempty"`
+	Identity        *Identity `json:"identity,omitempty"`
+	EndIdentity     *Identity `json:"end_identity,omitempty"`
+	SubjectVerified bool      `json:"subject_verified,omitempty"`
+	SubjectError    string    `json:"subject_error,omitempty"`
+	ExecutionDir    string    `json:"execution_dir,omitempty"`
 }
 
 // Git is the captured repository state at verify time.
@@ -58,10 +65,9 @@ type Command struct {
 // Passed reports whether the overall run passed.
 func (e *Evidence) Passed() bool { return e.Result == ResultPassed }
 
-// NewRunID returns a filesystem-safe run id based on the given UTC time, e.g.
-// "2026-06-30T14-22-10".
+// NewRunID returns a timestamped, randomly suffixed filesystem-safe run ID.
 func NewRunID(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15-04-05")
+	return t.UTC().Format("2006-01-02T15-04-05.000000000") + "-" + rand.Text()
 }
 
 // ArtifactExcludes returns the repo-relative pathspec(s) that LunarForge writes
@@ -104,10 +110,10 @@ func Write(evidenceDir, runDir string, e *Evidence) error {
 	if err != nil {
 		return fmt.Errorf("marshaling evidence: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "evidence.json"), data, 0o644); err != nil {
+	if err := writeOnce(filepath.Join(runDir, "evidence.json"), data); err != nil {
 		return fmt.Errorf("writing evidence.json: %w", err)
 	}
-	if err := os.WriteFile(latestPointer(evidenceDir), []byte(e.RunID+"\n"), 0o644); err != nil {
+	if err := AtomicWrite(latestPointer(evidenceDir), []byte(e.RunID+"\n")); err != nil {
 		return fmt.Errorf("writing latest pointer: %w", err)
 	}
 	return nil
@@ -145,7 +151,10 @@ func LatestRunID(evidenceDir string) (string, error) {
 	}
 	var newest string
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() > newest {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && entry.Name() > newest {
+			if _, err := os.Stat(filepath.Join(evidenceDir, entry.Name(), "evidence.json")); err != nil {
+				continue
+			}
 			newest = entry.Name()
 		}
 	}

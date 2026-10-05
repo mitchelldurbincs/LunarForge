@@ -32,13 +32,22 @@ type Config struct {
 
 // Project holds project-level metadata.
 type Project struct {
-	Name string `yaml:"name"`
+	Name         string `yaml:"name"`
+	RepositoryID string `yaml:"repository_id"`
 }
 
 // Verify holds the list of commands that make up the repo's verification
 // ritual. They run in order during `lf verify`.
 type Verify struct {
 	Commands []Command `yaml:"commands"`
+	// Profile names this local verification contract.
+	Profile string `yaml:"profile"`
+	// TreeReuse permits history-independent gates to reuse identical trees.
+	TreeReuse bool `yaml:"tree_reuse"`
+	// ToolVersions maps tool names to read-only version commands.
+	ToolVersions map[string]string `yaml:"tool_versions"`
+	// Inputs lists absolute external files whose contents affect the contract.
+	Inputs []string `yaml:"inputs"`
 }
 
 // Command is a single verify step.

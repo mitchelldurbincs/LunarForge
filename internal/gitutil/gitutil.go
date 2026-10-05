@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -44,7 +45,7 @@ func Snapshot(dir string) (Info, error) {
 		// A repo with no commits yet has no HEAD; treat as unborn branch.
 		branch = "(unborn)"
 	}
-	head, err := run(dir, "rev-parse", "--short", "HEAD")
+	head, err := run(dir, "rev-parse", "HEAD")
 	if err != nil {
 		head = "(none)"
 	}
@@ -129,14 +130,7 @@ func DiffHash(dir string, excludes ...string) (string, error) {
 		{"status", "--porcelain"},
 	}
 	for _, args := range parts {
-		full := append([]string{}, args...)
-		if len(excludes) > 0 {
-			full = append(full, "--", ".")
-			for _, e := range excludes {
-				full = append(full, ":(exclude)"+e)
-			}
-		}
-		out, err := runBytes(dir, full...)
+		out, err := runBytes(dir, excludingPaths(args, excludes)...)
 		if err != nil {
 			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
@@ -156,6 +150,7 @@ func run(dir string, args ...string) (string, error) {
 func runBytes(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = CommandEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -163,4 +158,31 @@ func runBytes(dir string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// CommandEnv preserves the process environment except Git repository overrides,
+// so child commands resolve the repository from their working directory.
+func CommandEnv() []string {
+	env := []string{}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY":
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
+}
+
+// excludingPaths adds Git pathspec exclusions without changing the base arguments.
+func excludingPaths(args, excludes []string) []string {
+	full := append([]string{}, args...)
+	if len(excludes) > 0 {
+		full = append(full, "--", ".")
+		for _, exclude := range excludes {
+			full = append(full, ":(exclude)"+exclude)
+		}
+	}
+	return full
 }

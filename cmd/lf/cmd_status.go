@@ -7,12 +7,14 @@ import (
 	"os"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/evidence"
+	"github.com/mitchelldurbincs/lunarforge/internal/gitutil"
 )
 
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	requireFresh := fs.Bool("require-fresh-passing", false, "exit non-zero unless fresh, passing evidence exists (used by the pre-push hook)")
 	strict := fs.Bool("strict", false, "alias of --require-fresh-passing")
+	commit := fs.String("commit", "", "require evidence for clean HEAD")
 	asJSON := fs.Bool("json", false, "print machine-readable JSON instead of text")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: lf status [--require-fresh-passing] [--json]\n\n"+
@@ -43,6 +45,33 @@ func cmdStatus(args []string) error {
 		ev, runDir = e, dir
 	}
 	r := evidence.Evaluate(ev, currentHash)
+	if *commit != "" && *commit != "HEAD" {
+		return fmt.Errorf("--commit supports HEAD only")
+	}
+	if *commit != "" || (ev != nil && ev.Mode == "commit") {
+		want, err := evidence.CaptureIdentity(l.cfg, l.repoDir)
+		if err != nil {
+			return err
+		}
+		selected, dir, err := evidence.SelectCommit(l.evidenceDir, *want, l.cfg.Verify.TreeReuse)
+		if err != nil {
+			return err
+		}
+		// Retain stale latest evidence for diagnostics when no applicable run exists.
+		if selected != nil {
+			ev, runDir = selected, dir
+		}
+		r = evidence.EvaluateCommit(ev, *want, l.cfg.Verify.TreeReuse)
+	}
+	if enforce {
+		subject, err := gitutil.ReadSubject(l.repoDir, l.excludes()...)
+		if err != nil {
+			return err
+		}
+		if subject.Dirty || (ev != nil && gitutil.PorcelainDirty(ev.Git.StatusPorcelain, l.excludes()...)) {
+			r.Blocked = "dirty_subject"
+		}
+	}
 	if runDir != "" {
 		r.EvidenceDir = relPath(l.repoDir, runDir)
 	}
