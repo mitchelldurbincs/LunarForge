@@ -38,6 +38,8 @@ func main() {
 		err = cmdLoop(args)
 	case "status":
 		err = cmdStatus(args)
+	case "pre-push":
+		err = cmdPrePush()
 	case "install-hooks":
 		err = cmdInstallHooks(args)
 	case "version", "--version", "-v":
@@ -95,6 +97,7 @@ Commands:
   explain         Explain the current diff using git + the latest evidence
   repair          Ask a configured AI agent to fix failed verification, then reverify
   loop            Run verify → repair if needed → explain when verified
+  pre-push        Check Git pre-push stdin refs and saved clean HEAD evidence
   install-hooks   Install a pre-push hook that requires fresh passing evidence
   version         Print the version
   help            Show this help

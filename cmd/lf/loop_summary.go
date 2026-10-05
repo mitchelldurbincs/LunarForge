@@ -112,7 +112,8 @@ func printLoopResult(s loopSummary, repoDir, summaryDir string) {
 	switch s.FinalResult {
 	case loopReady, loopRepaired:
 		fmt.Println("git diff")
-		fmt.Println("git push")
+		fmt.Println("inspect and commit any repair changes, then run lf verify --commit HEAD")
+		fmt.Println("handoff to the human push stage")
 	default:
 		fmt.Println("inspect the latest evidence and repair summary")
 		if s.FinalEvidencePath != "" {

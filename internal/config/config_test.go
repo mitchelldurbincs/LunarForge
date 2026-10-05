@@ -109,3 +109,10 @@ func TestFindStopsAtLinkedWorktreeBoundary(t *testing.T) {
 		t.Fatal("must not discover config above worktree")
 	}
 }
+
+func TestLoadRejectsFabricatedExternalPass(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), StarterTemplate("demo")+"\nstatus:\n  contracts:\n    - id: windows-restructure\n      status: passed\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("external declaration cannot manufacture a pass")
+	}
+}

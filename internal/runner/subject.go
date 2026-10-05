@@ -59,6 +59,7 @@ func verifySubject(cfg *config.Config, sourceDir, executionDir string, ev *evide
 		var execution *evidence.Identity
 		execution, err = captureExecution(cfg, executionDir, ev.Identity.Repository)
 		if err == nil {
+			ev.ExecutionEndIdentity = execution
 			ev.SubjectVerified = sameIdentity(ev.Identity, ev.EndIdentity) && sameIdentity(ev.Identity, execution)
 		}
 	}

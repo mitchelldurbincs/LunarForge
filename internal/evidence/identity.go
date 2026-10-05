@@ -72,10 +72,13 @@ func CaptureIdentity(cfg *config.Config, repo string) (*Identity, error) {
 			return nil, err
 		}
 	}
+	// Reporting observations do not change the execution contract.
+	effective := *cfg
+	effective.Status = config.Status{}
 	return &Identity{Repository: repository, Subject: subject, Contract: Digest(struct {
 		Config *config.Config
 		Inputs map[string]string
-	}{cfg, inputs}), Platform: platform}, nil
+	}{&effective, inputs}), Platform: platform}, nil
 }
 
 // SameInputs compares content, contract, repository, and platform, excluding commit

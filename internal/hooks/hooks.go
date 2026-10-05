@@ -17,12 +17,12 @@ const marker = "# >>> LunarForge managed pre-push hook >>>"
 
 // prePushScript is the pre-push hook body. It runs
 // `lf status --require-fresh-passing --commit HEAD`, which exits non-zero unless there is
-// fresh, passing evidence for the current diff. It does NOT re-run the verify
+// fresh, passing evidence for clean HEAD after validating stdin refs. It does NOT re-run the verify
 // commands, so the gate is fast.
 const prePushScript = `#!/bin/sh
 ` + marker + `
 # Installed by: lf install-hooks
-# Blocks a push unless LunarForge has fresh, passing evidence for the current diff.
+# Validates stdin refs, then requires clean commit evidence for HEAD.
 # This only reads saved evidence; it does not re-run your tests.
 # To bypass once:  git push --no-verify
 
@@ -32,7 +32,7 @@ if ! command -v lf >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! lf status --require-fresh-passing --commit HEAD; then
+if ! lf pre-push "$@"; then
   echo "" >&2
   echo "LunarForge pre-push gate failed: no fresh passing evidence." >&2
   echo "Run 'lf verify --commit HEAD' and try again, or push with --no-verify to bypass." >&2

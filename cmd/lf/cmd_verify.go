@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/evidence"
@@ -18,7 +19,7 @@ func cmdVerify(args []string) error {
 	commit := fs.String("commit", "", "verify clean HEAD in an isolated checkout")
 	quiet := fs.Bool("quiet", false, "do not stream command output to the terminal")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: lf verify [--continue-on-failure] [--quiet]\n\nRuns verify commands and saves evidence tied to the current diff.\n")
+		fmt.Fprintf(os.Stderr, "Usage: lf verify [--commit HEAD] [--continue-on-failure] [--quiet]\n\nRuns verify commands and saves evidence tied to the current diff.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -124,7 +125,7 @@ func fmtDuration(ms int64) string {
 }
 
 func relPath(base, target string) string {
-	if r, err := filepath.Rel(base, target); err == nil {
+	if r, err := filepath.Rel(base, target); err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 		return r
 	}
 	return target

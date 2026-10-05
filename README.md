@@ -36,9 +36,9 @@ convenient, but a local hook can be bypassed with `git push --no-verify`. The
 gate authoritative — something a local CLI flag can't wave past.
 
 LunarForge does **not** replace Claude Code, Codex, or manual driving. It is the
-**local evidence layer that runs after an AI edits your code**: it proves the
-checks passed, ties that proof to the exact code you're about to push, and
-blocks the push if the proof is missing, failed, or stale.
+**local evidence layer that runs after an AI edits your code**: it records command outcomes and the tested subject. Commit mode checks a clean
+HEAD in isolation; the hook refuses unsupported ref operations and missing,
+failed, dirty, or stale commit evidence. Local records are not authenticated proof.
 
 ### Why AGENTS.md / CLAUDE.md are not enough by themselves
 
@@ -98,7 +98,7 @@ checks in GitHub Actions.
 5. LunarForge saves evidence tied to the exact current git diff.
 6. You optionally run `lf explain`.
 7. You review the change.
-8. When you push, the pre-push hook runs `lf status --require-fresh-passing`.
+8. When a human pushes, the hook validates stdin refs and checks clean HEAD evidence.
 9. If evidence is missing, failed, or stale, the push is blocked.
 ```
 
@@ -156,18 +156,20 @@ git add -A && git commit -m "..."   # commit the change you want to push
 
 lf loop                             # verify → repair if needed → explain when verified
 
-# if successful:
+# inspect and commit any repair changes first:
 git diff
-git push                            # pre-push hook gates on fresh passing evidence
+lf verify --commit HEAD             # clean candidate, isolated execution
+lf status --commit HEAD --require-fresh-passing
+# Human handoff: pushing is a separate human action, never an AI action.
 ```
 
 `lf loop` runs the standard sequence in one command. The individual commands
 (`lf verify`, `lf repair`, `lf explain`) are still there when you want finer
 control — see [Local loop](#local-loop) for when to use each.
 
-The pre-push hook blocks the push unless fresh, passing evidence exists for the
-exact code being pushed. Commit first, then run the loop, so the evidence is tied
-to the commit you push.
+The hook supports one branch update whose outgoing object is HEAD. It requires
+clean commit evidence. A loop may repair uncommitted files; inspect and commit
+those changes, then run `lf verify --commit HEAD` before the human push stage.
 
 ---
 
@@ -332,7 +334,7 @@ Logs:
 
 #### The diff hash
 
-Evidence is bound to the exact code that would be pushed via a deterministic
+Legacy diff-mode evidence describes HEAD plus local changes using a deterministic
 SHA-256 of:
 
 ```bash
@@ -347,15 +349,147 @@ working-tree changes change after `lf verify`, the hash changes and the evidence
 becomes **stale**. LunarForge's own evidence directory (`.lf/`) is excluded from
 the hash, so recording evidence never makes that evidence stale.
 
-**Known limitations (by design for the MVP):**
+**Legacy diff-mode limitations:**
+
+A passing dirty worktree does not prove HEAD passed. Earlier versions could
+accept that dirty evidence for a push; strict status now refuses it, and the
+installed hook requires the separate clean commit mode. Ignored inputs and
+external config changes remain outside the legacy diff hash.
 
 - The *contents* of an **untracked** file are not hashed — an untracked file
   registers only by name via `git status --porcelain`. Track or stage a file to
-  have its contents gate the push.
+  include its contents in the diff hash. Dirty evidence cannot satisfy strict status.
 - The hash reflects HEAD plus uncommitted changes, not the full file tree. If
   you `lf verify` a dirty tree and then commit those exact changes, re-run
   `lf verify` so the evidence is tied to the new commit (committing changes the
   hash). The recommended loop — *commit, then verify* — avoids this.
+
+#### Clean commit mode and external companion config
+
+`lf verify --commit HEAD` refuses staged, unstaged, or untracked source changes.
+It creates a disposable local clone, checks out HEAD without hooks, and runs the
+configured commands there. Existing ignored files are not copied, eliminating
+ambiguity from old build outputs. Submodules are currently refused. The original
+checkout and its hooks are not changed. Commands must not refer back to mutable
+files in the original checkout. This is input isolation, not an execution sandbox.
+
+Records add full commit and tree IDs, repository identity, the effective config
+and declared-input digest, OS/architecture, runner/Go/Git/shell identities,
+declared tool versions, and start/end identity checks. Both the source checkout
+and execution checkout are rechecked; a changed subject/config/platform fails the
+run even when every command exited zero. The execution directory is removed on
+completion. Untracked, non-ignored source outputs in the clone fail the end check.
+Export artifacts to `LUNARFORGE_RUN_DIR` (set for each command).
+
+The digest covers the whole config except reporting status, so CI, repair, agent,
+and evidence-directory edits invalidate evidence too. Status and pre-push execute
+configured `tool_versions` commands; rebuilding LF with a different Go version
+also invalidates evidence.
+
+Set `LUNARFORGE_CONFIG` to explicitly load a companion YAML file. An empty,
+missing, or invalid explicit path fails without fallback. Otherwise discovery
+stops at the repository boundary. Commands always start at the invocation's Git
+root, including nested invocations and linked worktrees. External configs require
+an absolute evidence directory whose parent is outside the repository; YAML does
+not expand `~` or environment placeholders. Select a config for each invocation;
+there is no automatic repository/profile mapping or YAML merge.
+
+Example external file (replace absolute paths for your machine):
+
+```yaml
+version: 1
+project:
+  name: example
+  repository_id: stable-repository-id
+verify:
+  profile: linux
+  tree_reuse: false
+  tool_versions:
+    dotnet: dotnet --version
+  # List absolute external scripts/config inputs here; their contents are hashed.
+  inputs: []
+  commands:
+    - id: restore
+      run: dotnet restore
+    - id: build
+      run: dotnet build -c Release --no-restore -warnaserror
+    - id: test
+      run: dotnet test -c Release --no-build --logger trx --results-directory "$LUNARFORGE_RUN_DIR/test-results"
+evidence:
+  dir: /home/me/.local/state/lunarforge/example/checkout-key/linux/runs
+repair:
+  enabled: false
+status:
+  contracts:
+    - id: windows-restructure
+      platform: windows
+      status: pending
+      reason: Windows platform not available on this runner
+    - id: coverage-warnings
+      status: enforced-remotely
+      authority: ADO
+      ado:
+        definition_id: 111
+```
+
+```bash
+LUNARFORGE_CONFIG="$HOME/.config/lunarforge/repos/example/linux.yml" lf verify --commit HEAD
+LUNARFORGE_CONFIG="$HOME/.config/lunarforge/repos/example/linux.yml" lf status --json
+```
+
+Use a stable repository key, a distinct checkout key, and a platform/profile
+namespace. `latest` and `loops/` are siblings of `runs/`. All LF artifacts stay
+there; build outputs stay in the disposable checkout unless commands explicitly
+choose an external cache or artifact directory. Runtime state belongs under the
+user state directory; configuration belongs under the user config directory.
+On Windows choose absolute paths under the corresponding user directories.
+
+Completed evidence records are immutable through LF. Random run-ID suffixes and
+exclusive directory creation prevent collisions; evidence and latest files are
+published using sibling temporary files and rename. Commit status scans completed
+ledger records, so a newer applicable failure blocks an older success even if
+concurrent completion order moved `latest` backward. Running/incomplete attempts
+are not completed evidence. Older schema-v1 diff records remain readable.
+New evidence files use mode 0600 and state directories 0700; CI artifact readers
+need access as the owning user.
+
+History-only rewrites are stale by default. Opt into `verify.tree_reuse: true`
+only for history-independent gates. A matching repository/tree/contract/platform
+can then reuse the newest applicable execution: status sets `reused_from` and
+reports the original execution SHA and timestamps without rewriting the ledger.
+SourceLink, version stamping, Git history queries, unpinned dependencies, and
+undeclared external inputs can invalidate tree-only assumptions. Record relevant
+tools and external inputs; LF does not infer a complete dependency/environment
+closure. Start/end checks cannot detect a transient edit reverted during a run.
+Evidence is local operational accountability, not tamper-resistant attestation.
+
+`lf status --json` preserves existing fields and adds current/evidence identities,
+resolved paths, execution timestamps, `reused_from`, and `contracts`. The local
+row reports freshness and result; external rows can only be `pending` or
+`enforced-remotely`, never a fabricated local pass. Optional `ado` observations
+carry `build_id`, `definition_id`, `source_commit`, `target_commit`, `merge_commit`,
+`result`, and `observed_at` independently. LF performs no ADO reads or writes;
+the orchestrator obtains and refreshes those observations. Reporting-only changes
+do not change the execution digest. `ready` is local gate readiness;
+`all_contracts_satisfied` remains false when external requirements are present.
+Neither field grants merge approval. Pushing remains a human stage.
+
+The pre-push contract supports one branch update with a local object equal to
+HEAD. It fails closed with these messages for unsupported operations:
+
+- `pre-push: local object is not HEAD`
+- `pre-push: multiple ref updates are not supported`
+- `pre-push: deletion updates are not supported`
+- `pre-push: tag updates are not supported`
+- `pre-push: only branch updates are supported`
+- `pre-push: no ref updates supplied`
+
+Malformed fields/object IDs also fail. Branch creation is supported. A GUI Git
+client may not inherit your shell environment: manually install a repo-scoped
+wrapper that exports the exact companion config before invoking `lf pre-push`.
+Inspect `core.hooksPath` and preserve existing hook behavior; a backed-up foreign
+hook is not automatically composed. Hooks remain bypassable and are not server
+policy. These changes provide data for a future dashboard, not a dashboard UI.
 
 #### Evidence layout
 
@@ -385,7 +519,7 @@ per-command files:
   "finished_at": "2026-06-30T14:23:02Z",
   "result": "passed",
   "diff_hash": "sha256:abc123",
-  "git": { "branch": "main", "head": "abc1234", "status_porcelain": "..." },
+  "git": { "branch": "main", "head": "<full-commit-SHA>", "status_porcelain": "..." },
   "commands": [
     {
       "id": "lint",
@@ -421,11 +555,12 @@ Result:
 ✅ ready to push
 ```
 
-`lf status --require-fresh-passing` (used by the pre-push hook) makes the exit
+`lf status --require-fresh-passing` makes the exit
 code the source of truth. It exits:
 
-- **`0`** only when latest evidence **exists**, **passed**, and its diff hash
-  **matches** the current code.
+- **`0`** only when evidence **exists**, **passed**, is **fresh** under its mode,
+  and both the current and tested subjects are clean. With `--commit HEAD`,
+  legacy records cannot qualify; full commit/tree/contract/platform identity is checked.
 - **non-zero** when any of these hold: no evidence exists, the latest run
   failed, the evidence is stale, the current directory is not a git repo, or
   `.lunarforge.yml` is missing/invalid.
@@ -656,9 +791,9 @@ It only checks and repairs the current working tree and .lunarforge.yml.
 
 The agent still does **not** get to declare success. The loop trusts only
 LunarForge evidence: after repair it re-reads the latest evidence and runs
-`lf explain` only when that evidence is fresh and passing. So after a successful
-loop, `lf status --require-fresh-passing` exits `0`; after a blocked loop it
-exits non-zero.
+`lf explain` only when that evidence is fresh and passing. A successful repair
+can leave dirty files: strict status refuses that subject even when the loop
+passes. Commit the inspected repair and verify the resulting clean HEAD.
 
 **Flags:**
 
@@ -693,11 +828,11 @@ lf loop       # want the standard local sequence in one command
 ### `lf install-hooks`
 
 Installs a **pre-push** hook (not pre-commit — pre-commit is too noisy for WIP
-commits). The hook runs `lf status --require-fresh-passing`, so a push is blocked
-unless there is **fresh, passing evidence** for the current code. The hook only
+commits). The hook runs `lf pre-push`, consuming Git's stdin refs, then checks
+`lf status --commit HEAD --require-fresh-passing`. The hook only
 **reads** saved evidence; it does **not** re-run your tests, so it's fast.
 
-The hook is safe about existing hooks:
+Review existing hooks before installation:
 
 - A previously LunarForge-managed hook is updated in place.
 - An existing **foreign** `pre-push` hook is **backed up** (e.g.
@@ -998,7 +1133,7 @@ And see the pre-push gate in action:
 lf install-hooks
 git add -A && git commit -m "change"
 git push        # blocked: evidence is stale for this commit
-lf verify       # re-prove for the new commit
+lf verify --commit HEAD  # isolated verification of the new commit
 git push        # now allowed
 ```
 
@@ -1020,7 +1155,7 @@ git commit -m "fixture"
 lf verify                 # ❌ contents failed → failed evidence saved
 lf repair --dry-run       # shows the plan + agent command, writes nothing
 lf repair                 # fake agent fixes the file, verify reruns → ✅ passed
-lf status --require-fresh-passing   # exits 0
+lf status --require-fresh-passing   # non-zero: repair is still uncommitted
 
 # Exhaustion path with the no-op agent:
 git checkout src/hello.txt && printf 'broken\n' > src/hello.txt

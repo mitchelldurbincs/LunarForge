@@ -40,8 +40,8 @@ func TestInstallPrePushFresh(t *testing.T) {
 	if !strings.Contains(body, marker) {
 		t.Error("hook missing management marker")
 	}
-	if !strings.Contains(body, "lf status --require-fresh-passing") {
-		t.Error("hook should call lf status --require-fresh-passing")
+	if !strings.Contains(body, `lf pre-push "$@"`) {
+		t.Error("hook should forward stdin and arguments to lf pre-push")
 	}
 }
 
@@ -95,5 +95,31 @@ func TestInstallPrePushBacksUpForeignHook(t *testing.T) {
 	newHook, _ := os.ReadFile(hookPath)
 	if !strings.Contains(string(newHook), marker) {
 		t.Error("installed hook should be the managed hook")
+	}
+}
+
+func TestInstalledHookForwardsStdin(t *testing.T) {
+	dir := gitInit(t)
+	bin := t.TempDir()
+	captured := filepath.Join(bin, "captured")
+	fakeLF := "#!/bin/sh\n[ \"$1\" = pre-push ] || exit 2\ncat > \"$CAPTURE_REFS\"\nexit 7\n"
+	if err := os.WriteFile(filepath.Join(bin, "lf"), []byte(fakeLF), 0755); err != nil {
+		t.Fatal(err)
+	}
+	hook, err := InstallPrePush(dir, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", hook.Path, "origin", "unused")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "CAPTURE_REFS="+captured)
+	input := "refs/heads/main local refs/heads/main remote\n"
+	cmd.Stdin = strings.NewReader(input)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("hook must propagate rejection")
+	}
+	data, err := os.ReadFile(captured)
+	if err != nil || string(data) != input {
+		t.Fatalf("stdin lost: %q %v", data, err)
 	}
 }

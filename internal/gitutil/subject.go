@@ -43,7 +43,7 @@ func IsolatedCheckout(repo, commit string) (string, func(), error) {
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	if _, err = run(repo, "clone", "--local", "--no-hardlinks", "--no-checkout", "--", repo, dir); err == nil {
-		_, err = run(dir, "-c", "core.hooksPath="+filepath.Join(dir, "disabled-hooks"), "checkout", "--detach", commit)
+		_, err = run(dir, "-c", "core.hooksPath="+filepath.Join(dir, ".git", "disabled-hooks"), "checkout", "--detach", commit)
 	}
 	if err == nil {
 		var entries string

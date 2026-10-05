@@ -24,6 +24,7 @@ type Config struct {
 	Repair   Repair           `yaml:"repair"`
 	Agents   map[string]Agent `yaml:"agents"`
 	CI       CI               `yaml:"ci"`
+	Status   Status           `yaml:"status"`
 
 	// path is the absolute path the config was loaded from. It is not part of
 	// the serialized YAML.
@@ -286,6 +287,16 @@ func (c *Config) validate() error {
 			return fmt.Errorf("duplicate verify command id %q", cmd.ID)
 		}
 		seen[cmd.ID] = true
+	}
+	rowIDs := map[string]bool{}
+	for _, row := range c.Status.Contracts {
+		if row.ID == "" || row.ID == c.Verify.Profile || rowIDs[row.ID] {
+			return fmt.Errorf("status contract IDs must be nonempty, unique, and distinct from verify.profile")
+		}
+		rowIDs[row.ID] = true
+		if row.Status != "pending" && row.Status != "enforced-remotely" {
+			return fmt.Errorf("status contract %s must be pending or enforced-remotely", row.ID)
+		}
 	}
 	return nil
 }

@@ -77,6 +77,9 @@ func TestCommitRunFailsWhenCommandChangesTrackedSubject(t *testing.T) {
 	if res.Evidence.Passed() || res.Evidence.SubjectVerified || res.Evidence.SubjectError == "" {
 		t.Fatal("changed execution subject accepted")
 	}
+	if res.Evidence.ExecutionEndIdentity == nil || !res.Evidence.ExecutionEndIdentity.Subject.Dirty {
+		t.Fatal("execution end subject not recorded")
+	}
 	data, err := os.ReadFile(filepath.Join(repo, "source"))
 	if err != nil || string(data) != "before" {
 		t.Fatal("source repository changed")
