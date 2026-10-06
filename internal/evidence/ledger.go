@@ -34,7 +34,7 @@ func SelectCommit(dir string, want Identity, reuse bool) (*Evidence, string, err
 		if ev.Mode != "commit" || ev.Identity == nil || !ev.Identity.SameInputs(want) {
 			continue
 		}
-		if !reuse && ev.Identity.Subject.Commit != want.Subject.Commit {
+		if (!reuse || len(ev.Contracts) != 0) && ev.Identity.Subject.Commit != want.Subject.Commit {
 			continue
 		}
 		if selected == nil || ev.StartedAt.After(selected.StartedAt) || (ev.StartedAt.Equal(selected.StartedAt) && ev.RunID > selected.RunID) {
@@ -63,7 +63,7 @@ func EvaluateCommit(ev *Evidence, want Identity, reuse bool) Readiness {
 	}
 	r.Fresh = ev.Identity.SameInputs(want) && ev.Identity.SameInputs(*ev.EndIdentity) && ev.Identity.Subject == ev.EndIdentity.Subject
 	if ev.Identity.Subject.Commit != want.Subject.Commit {
-		if reuse && r.Fresh {
+		if reuse && len(ev.Contracts) == 0 && r.Fresh {
 			r.ReusedFrom = ev.RunID
 		} else {
 			r.Fresh = false

@@ -102,3 +102,19 @@ func TestRunMissingCommandPreservesPrompt(t *testing.T) {
 		t.Errorf("prompt should be saved even when command is missing: %v", err)
 	}
 }
+
+func TestBuildPromptIncludesCheckResults(t *testing.T) {
+	// Arrange.
+	ev := &evidence.Evidence{Result: evidence.ResultFailed, Contracts: []evidence.Contract{
+		{ID: "format", Status: "failed", ExitCode: 1, Reason: "changes needed\n7 files"},
+		{ID: "tool", Status: "error", ExitCode: 3, Reason: "tool unavailable"},
+	}}
+	// Act.
+	got := BuildPrompt(PromptInput{Evidence: ev, HasEvidence: true, EvidenceFresh: true})
+	// Assert.
+	for _, want := range []string{"Contract format: failed (exit 1), fresh=true — changes needed 7 files", "Contract tool: error (exit 3), fresh=true — tool unavailable"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, got)
+		}
+	}
+}

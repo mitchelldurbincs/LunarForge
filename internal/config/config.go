@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -294,6 +296,15 @@ func (c *Config) validate() error {
 			return fmt.Errorf("status contract IDs must be nonempty, unique, and distinct from verify.profile")
 		}
 		rowIDs[row.ID] = true
+		if row.Check != "" {
+			if strings.TrimSpace(row.Check) == "" || row.Platform != "" || row.Status != "" || row.ADO != nil {
+				return fmt.Errorf("status contract %s check must be nonempty and cannot be combined with platform, status, or ado", row.ID)
+			}
+			if row.ID == "." || row.ID == ".." || !regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`).MatchString(row.ID) {
+				return fmt.Errorf("status check contract %q requires a filesystem-safe id (letters, digits, dot, dash, underscore)", row.ID)
+			}
+			continue
+		}
 		if row.Status != "pending" && row.Status != "enforced-remotely" {
 			return fmt.Errorf("status contract %s must be pending or enforced-remotely", row.ID)
 		}

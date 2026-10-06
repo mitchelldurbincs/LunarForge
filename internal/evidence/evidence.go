@@ -21,26 +21,30 @@ const SchemaVersion = 1
 const (
 	ResultPassed = "passed"
 	ResultFailed = "failed"
+	ResultError  = "error"
 )
 
 // Evidence is the top-level evidence.json document.
 type Evidence struct {
-	Version              int       `json:"version"`
-	Project              string    `json:"project"`
-	RunID                string    `json:"run_id"`
-	StartedAt            time.Time `json:"started_at"`
-	FinishedAt           time.Time `json:"finished_at"`
-	Result               string    `json:"result"`
-	DiffHash             string    `json:"diff_hash"`
-	Git                  Git       `json:"git"`
-	Commands             []Command `json:"commands"`
-	Mode                 string    `json:"mode,omitempty"`
-	Identity             *Identity `json:"identity,omitempty"`
-	EndIdentity          *Identity `json:"end_identity,omitempty"`
-	ExecutionEndIdentity *Identity `json:"execution_end_identity,omitempty"`
-	SubjectVerified      bool      `json:"subject_verified,omitempty"`
-	SubjectError         string    `json:"subject_error,omitempty"`
-	ExecutionDir         string    `json:"execution_dir,omitempty"`
+	Version              int        `json:"version"`
+	Project              string     `json:"project"`
+	RunID                string     `json:"run_id"`
+	StartedAt            time.Time  `json:"started_at"`
+	FinishedAt           time.Time  `json:"finished_at"`
+	Result               string     `json:"result"`
+	ProfileResult        string     `json:"profile_result,omitempty"`
+	DiffHash             string     `json:"diff_hash"`
+	Git                  Git        `json:"git"`
+	Commands             []Command  `json:"commands"`
+	Contracts            []Contract `json:"contracts,omitempty"`
+	CheckDigest          string     `json:"check_digest,omitempty"`
+	Mode                 string     `json:"mode,omitempty"`
+	Identity             *Identity  `json:"identity,omitempty"`
+	EndIdentity          *Identity  `json:"end_identity,omitempty"`
+	ExecutionEndIdentity *Identity  `json:"execution_end_identity,omitempty"`
+	SubjectVerified      bool       `json:"subject_verified,omitempty"`
+	SubjectError         string     `json:"subject_error,omitempty"`
+	ExecutionDir         string     `json:"execution_dir,omitempty"`
 }
 
 // Git is the captured repository state at verify time.

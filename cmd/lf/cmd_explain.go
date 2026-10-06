@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/evidence"
@@ -40,6 +41,11 @@ func cmdExplain(args []string) error {
 	fmt.Println("LunarForge explain")
 	fmt.Println()
 	fmt.Printf("Evidence: %s\n", evidenceBadge(in))
+	if in.Evidence != nil {
+		for _, c := range in.Evidence.Contracts {
+			fmt.Printf("Contract %s: %s (exit %d), fresh=%t — %s\n", c.ID, c.Status, c.ExitCode, in.EvidenceFresh, strings.Join(strings.Fields(c.Reason), " "))
+		}
+	}
 	fmt.Println()
 
 	if *printPrompt {
@@ -100,15 +106,15 @@ func (l *loaded) explainContext() (explain.PromptInput, string, error) {
 		Diff:    diff,
 	}
 
-	if ev, dir, lerr := evidence.LoadLatest(l.evidenceDir); lerr == nil {
-		fresh, _, ferr := freshness(l, ev)
-		if ferr != nil {
-			return explain.PromptInput{}, "", ferr
-		}
-		in.Evidence = ev
+	status, err := evaluateStatus(l, "", "")
+	if err != nil {
+		return explain.PromptInput{}, "", err
+	}
+	if status.evidence != nil {
+		in.Evidence = status.evidence
 		in.HasEvidence = true
-		in.EvidenceFresh = fresh
-		return in, dir, nil
+		in.EvidenceFresh = status.readiness.Fresh && status.readiness.Blocked == ""
+		return in, evidence.RunDir(l.evidenceDir, status.evidence.RunID), nil
 	}
 
 	// No evidence yet: create a fresh run dir just to hold the explanation.

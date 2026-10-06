@@ -111,6 +111,10 @@ func evaluateStatus(l *loaded, commit, expectedHead string) (*statusEvaluation, 
 	if runDir != "" {
 		r.EvidenceDir = relPath(l.repoDir, runDir)
 	}
+	if !evidence.CheckConfigMatches(l.cfg, ev) {
+		r.Fresh = false
+	}
+	r = evidence.RequireChecks(r, l.cfg, ev)
 
 	return &statusEvaluation{r, ev, want}, nil
 }
@@ -190,12 +194,25 @@ func printStatusJSON(r evidence.Readiness, l *loaded, ev *evidence.Evidence, wan
 	if profile == "" {
 		profile = runtime.GOOS
 	}
-	rows := []any{map[string]any{"id": profile, "platform": runtime.GOOS, "status": localContractState(r), "fresh": r.Fresh, "passed": r.Passed, "ready": r.Ready(), "run_id": r.EvidenceID, "reused_from": r.ReusedFrom}}
+	profileReadiness := r
+	if ev != nil && ev.ProfileResult != "" {
+		profileReadiness.Passed = ev.ProfileResult == evidence.ResultPassed
+		profileReadiness.ContractFailure = ""
+	}
+	rows := []any{map[string]any{"id": profile, "platform": runtime.GOOS, "status": localContractState(profileReadiness), "fresh": profileReadiness.Fresh, "passed": profileReadiness.Passed, "ready": profileReadiness.Ready(), "run_id": r.EvidenceID, "reused_from": r.ReusedFrom}}
+	allSatisfied := r.Ready()
 	for _, row := range l.cfg.Status.Contracts {
-		rows = append(rows, row)
+		if row.Check == "" {
+			rows = append(rows, row)
+			allSatisfied = false // external requirements remain independently reported
+			continue
+		}
+		check := checkContractRow(row, ev, r)
+		rows = append(rows, check)
+		allSatisfied = allSatisfied && check.Ready
 	}
 	out["contracts"] = rows
-	out["all_contracts_satisfied"] = r.Ready() && len(l.cfg.Status.Contracts) == 0
+	out["all_contracts_satisfied"] = allSatisfied
 	out["push_owner"] = "human"
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

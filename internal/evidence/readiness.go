@@ -4,28 +4,33 @@ package evidence
 // current repo diff hash. It is the single source of truth for whether the repo
 // is ready to push, shared by `lf status` and the pre-push hook.
 type Readiness struct {
-	Blocked     string // refusal independent of hash equality
-	ReusedFrom  string // immutable execution record applied to a rewritten commit
-	HasEvidence bool   // latest evidence exists and could be loaded
-	Passed      bool   // latest evidence result == passed
-	Fresh       bool   // evidence diff hash matches the current diff hash
-	EvidenceID  string // run id of the evaluated evidence (empty if none)
-	EvidenceDir string // run dir of the evaluated evidence (empty if none)
-	WantHash    string // current diff hash
-	HaveHash    string // diff hash recorded in evidence (empty if none)
+	Blocked         string // refusal independent of hash equality
+	ContractFailure string // executable contract that prevents readiness
+	ReusedFrom      string // immutable execution record applied to a rewritten commit
+	HasEvidence     bool   // latest evidence exists and could be loaded
+	Passed          bool   // latest evidence result == passed
+	Fresh           bool   // evidence diff hash matches the current diff hash
+	EvidenceID      string // run id of the evaluated evidence (empty if none)
+	EvidenceDir     string // run dir of the evaluated evidence (empty if none)
+	WantHash        string // current diff hash
+	HaveHash        string // diff hash recorded in evidence (empty if none)
 }
 
 // Ready reports whether the repo is ready to push: fresh, passing evidence
 // exists. This is the invariant the pre-push gate enforces.
 func (r Readiness) Ready() bool {
-	return r.Blocked == "" && r.HasEvidence && r.Passed && r.Fresh
+	return r.Blocked == "" && r.ContractFailure == "" && r.HasEvidence && r.Passed && r.Fresh
 }
 
 // Reason returns a short machine-stable reason code for the current state.
 func (r Readiness) Reason() string {
 	switch {
+	case r.Blocked != "" && r.ContractFailure != "":
+		return r.Blocked + "; " + r.ContractFailure
 	case r.Blocked != "":
 		return r.Blocked
+	case r.ContractFailure != "":
+		return r.ContractFailure
 	case !r.HasEvidence:
 		return "no_evidence"
 	case !r.Passed:
@@ -49,5 +54,11 @@ func Evaluate(ev *Evidence, currentHash string) Readiness {
 	r.HaveHash = ev.DiffHash
 	r.Fresh = ev.DiffHash == currentHash
 	r.EvidenceID = ev.RunID
+	for _, row := range ev.Contracts {
+		if row.Status != ResultPassed {
+			r.ContractFailure = "contract " + row.ID + ": " + row.Status
+			break
+		}
+	}
 	return r
 }

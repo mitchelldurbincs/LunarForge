@@ -30,6 +30,9 @@ func writeSummary(runDir string, ev *evidence.Evidence) error {
 			c.ID, plainResult(c.Result), fmtSeconds(c.DurationMs), logs)
 	}
 	b.WriteString("\n")
+	for _, c := range ev.Contracts {
+		fmt.Fprintf(&b, "Contract %s: %s (exit %d) — %s\n", c.ID, c.Status, c.ExitCode, strings.Join(strings.Fields(c.Reason), " "))
+	}
 	fmt.Fprintf(&b, "Run id: %s  \n", ev.RunID)
 	fmt.Fprintf(&b, "Started: %s  \n", ev.StartedAt.Format("2006-01-02 15:04:05 MST"))
 	fmt.Fprintf(&b, "Finished: %s\n", ev.FinishedAt.Format("2006-01-02 15:04:05 MST"))

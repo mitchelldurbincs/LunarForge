@@ -34,18 +34,23 @@ func runOne(opts Options, cmdDir string, c config.Command) evidence.Command {
 	}
 	defer stderrFile.Close()
 
-	cmd := shellCommand(c.Run)
-	cmd.Dir = opts.RepoDir
-	cmd.Env = append(gitutil.CommandEnv(), "LUNARFORGE_RUN_DIR="+filepath.Dir(cmdDir))
-	if opts.Stream != nil {
-		cmd.Stdout = io.MultiWriter(stdoutFile, opts.Stream)
-		cmd.Stderr = io.MultiWriter(stderrFile, opts.Stream)
-	} else {
-		cmd.Stdout = stdoutFile
-		cmd.Stderr = stderrFile
-	}
+	return finishRecord(rec, execute(opts, filepath.Dir(cmdDir), c.Run, stdoutFile, stderrFile))
+}
 
-	return finishRecord(rec, cmd.Run())
+// execute gives profile commands and contract checks identical shell, working
+// directory, environment, streaming, and sequential execution behavior.
+func execute(opts Options, runDir, command string, stdout, stderr io.Writer) error {
+	cmd := shellCommand(command)
+	cmd.Dir = opts.RepoDir
+	cmd.Env = append(gitutil.CommandEnv(), "LUNARFORGE_RUN_DIR="+runDir)
+	if opts.Stream != nil {
+		cmd.Stdout = io.MultiWriter(stdout, opts.Stream)
+		cmd.Stderr = io.MultiWriter(stderr, opts.Stream)
+	} else {
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+	}
+	return cmd.Run()
 }
 
 func finishRecord(rec evidence.Command, err error) evidence.Command {

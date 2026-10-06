@@ -72,13 +72,23 @@ func CaptureIdentity(cfg *config.Config, repo string) (*Identity, error) {
 			return nil, err
 		}
 	}
-	// Reporting observations do not change the execution contract.
-	effective := *cfg
-	effective.Status = config.Status{}
 	return &Identity{Repository: repository, Subject: subject, Contract: Digest(struct {
 		Config *config.Config
 		Inputs map[string]string
-	}{&effective, inputs}), Platform: platform}, nil
+	}{ExecutionConfig(cfg), inputs}), Platform: platform}, nil
+}
+
+// ExecutionConfig excludes reporting observations from execution identity, while
+// retaining executable checks and their diagnostic meanings.
+func ExecutionConfig(cfg *config.Config) *config.Config {
+	effective := *cfg
+	effective.Status = config.Status{}
+	for _, row := range cfg.Status.Contracts {
+		if row.Check != "" {
+			effective.Status.Contracts = append(effective.Status.Contracts, row)
+		}
+	}
+	return &effective
 }
 
 // SameInputs compares content, contract, repository, and platform, excluding commit

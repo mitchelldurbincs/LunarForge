@@ -474,6 +474,48 @@ do not change the execution digest. `ready` is local gate readiness;
 `all_contracts_satisfied` remains false when external requirements are present.
 Neither field grants merge approval. Pushing remains a human stage.
 
+Executable contracts run after the profile commands in both `lf verify` and
+`lf verify --commit HEAD`, even when a profile command fails. For example:
+
+```yaml
+status:
+  contracts:
+    - id: windows-restructure
+      check: /home/aspect/.dotnet/dotnet /home/aspect/source/repos/mitchell.durbin/AlliantRestructure/Alliant.Utility.Restructure.Cli/bin/Release/net10.0/Alliant.Utility.Restructure.Cli.dll --no-project --check Alliant.Application.Parts/
+      reason: "exit 0 = clean; exit 1 = changes needed"
+```
+
+`check` is one shell command, mutually exclusive with `platform`, `status`, and
+`ado`. Check IDs use letters, digits, dots, dashes, or underscores (not `.` or
+`..`). Checks use the same sequential launcher, child environment (including
+`PATH` and `LUNARFORGE_RUN_DIR`), and working directory as profile commands.
+In commit mode that directory is the disposable checkout. LF adds no separate
+timeout for checks; the same execution discipline applies to both kinds of command.
+
+Exit 0 records `passed`, exit 1 records `failed`, and other exits or spawn errors
+record `error`. The configured reason and the last 4096 bytes of each output
+stream explain failures, preserving meanings such as "changes needed". Each
+run stores `contracts/<id>/evidence.json`, `stdout.txt`, and `stderr.txt`; the
+parent `evidence.json` binds these results to its diff or commit identity.
+`lf verify` and `lf explain` print one result line per executed check.
+
+Check rows in `lf status --json` include `id`, `status`, `fresh`, `passed`,
+`ready`, `exit_code`, `reason`, `command`, `run_id`, and `reused_from`. Before
+evidence exists, the status is `pending` and `exit_code` is null. Stale rows keep
+their recorded status but have `fresh: false` and cannot satisfy readiness.
+Only fresh passing checks satisfy the local gate; a failed or erroneous check
+names its ID in the readiness reason. `all_contracts_satisfied` can be true with
+passing checks, but remains false when declarative external requirements exist.
+Declarative and executable rows retain their configured order after the profile.
+Consumers such as yuheng must recognize the additive `error` status.
+
+Repeated verification of identical inputs can reuse check results, including
+failures; `reused_from` names the original run. Profile commands still run each
+time. A changed diff, command, or execution config reruns checks. Commit checks
+require the exact commit identity and rerun after rewrites even with
+`verify.tree_reuse: true`. Declare external tool inputs and versions as above;
+LF cannot infer undeclared dependencies or changes in external services.
+
 The pre-push contract supports one branch update with a local object equal to
 HEAD. It fails closed with these messages for unsupported operations:
 

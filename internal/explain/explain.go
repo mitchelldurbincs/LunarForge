@@ -76,6 +76,9 @@ func BuildPrompt(in PromptInput) string {
 		for _, c := range ev.Commands {
 			fmt.Fprintf(&b, "  - %s (%s): exit %d, %dms — `%s`\n", c.ID, c.Result, c.ExitCode, c.DurationMs, c.Run)
 		}
+		for _, c := range ev.Contracts {
+			fmt.Fprintf(&b, "Contract %s: %s (exit %d), fresh=%t — %s\n", c.ID, c.Status, c.ExitCode, in.EvidenceFresh, strings.Join(strings.Fields(c.Reason), " "))
+		}
 	}
 	b.WriteString("\n")
 

@@ -66,6 +66,9 @@ func cmdVerify(args []string) error {
 			fmt.Printf("⏭️  %s skipped\n", c.ID)
 		}
 	}
+	for _, c := range ev.Contracts {
+		fmt.Printf("Contract %s: %s (exit %d) — %s\n", c.ID, c.Status, c.ExitCode, strings.Join(strings.Fields(c.Reason), " "))
+	}
 
 	fmt.Println()
 	fmt.Println("Result:")

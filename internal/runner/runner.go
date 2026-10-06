@@ -70,6 +70,10 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 		ev.Identity = identity
 		ev.ExecutionDir = opts.RepoDir
 	}
+	previous := reusableChecks(cfg, opts, ev)
+	if cfg.HasChecks() {
+		ev.CheckDigest = evidence.Digest(evidence.ExecutionConfig(cfg))
+	}
 	overall := evidence.ResultPassed
 	for _, c := range cfg.Verify.Commands {
 		rec := runOne(opts, cmdDir, c)
@@ -81,9 +85,37 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 			}
 		}
 	}
+	// Contracts run after the profile, including when its commands failed.
+	if cfg.HasChecks() {
+		ev.ProfileResult = overall
+	}
+	for _, row := range cfg.Status.Contracts {
+		if row.Check == "" {
+			continue
+		}
+		var rec evidence.Contract
+		if saved := previous.CheckResult(row); saved != nil {
+			rec = *saved
+			if rec.ReusedFrom == "" {
+				rec.ReusedFrom = previous.RunID
+			}
+		} else {
+			rec = runContract(opts, runDir, row)
+		}
+		if err := saveContract(runDir, rec); err != nil {
+			return nil, fmt.Errorf("saving contract %s: %w", row.ID, err)
+		}
+		ev.Contracts = append(ev.Contracts, rec)
+		if rec.Status != evidence.ResultPassed {
+			overall = evidence.ResultFailed
+		}
+	}
 
 	if identity != nil && !verifySubject(cfg, sourceDir, opts.RepoDir, ev) {
 		overall = evidence.ResultFailed
+		if ev.ProfileResult != "" {
+			ev.ProfileResult = evidence.ResultFailed
+		}
 	}
 	ev.FinishedAt = time.Now().UTC()
 	ev.Result = overall

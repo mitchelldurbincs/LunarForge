@@ -1,0 +1,61 @@
+[
+  {
+    "fresh": true,
+    "id": "linux",
+    "passed": true,
+    "platform": "linux",
+    "ready": true,
+    "reused_from": "",
+    "run_id": "run",
+    "status": "passed"
+  },
+  {
+    "ado": {
+      "definition_id": 111
+    },
+    "authority": "ADO",
+    "id": "remote",
+    "status": "enforced-remotely"
+  },
+  {
+    "command": "true",
+    "exit_code": 0,
+    "fresh": true,
+    "id": "clean",
+    "passed": true,
+    "ready": true,
+    "reason": "check passed (exit 0)",
+    "reused_from": "",
+    "run_id": "run",
+    "status": "passed"
+  },
+  {
+    "id": "windows",
+    "platform": "windows",
+    "status": "pending"
+  },
+  {
+    "command": "printf \"changes needed\" \u003e\u00262; exit 1",
+    "exit_code": 1,
+    "fresh": true,
+    "id": "format",
+    "passed": false,
+    "ready": false,
+    "reason": "check failed (exit 1); changes needed",
+    "reused_from": "",
+    "run_id": "run",
+    "status": "failed"
+  },
+  {
+    "command": "exit 3",
+    "exit_code": 3,
+    "fresh": true,
+    "id": "broken",
+    "passed": false,
+    "ready": false,
+    "reason": "check error (exit 3): exit status 3",
+    "reused_from": "",
+    "run_id": "run",
+    "status": "error"
+  }
+]

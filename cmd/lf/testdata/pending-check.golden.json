@@ -1,0 +1,12 @@
+{
+  "command": "true",
+  "exit_code": null,
+  "fresh": false,
+  "id": "format",
+  "passed": false,
+  "ready": false,
+  "reason": "no check evidence",
+  "reused_from": "",
+  "run_id": "",
+  "status": "pending"
+}
