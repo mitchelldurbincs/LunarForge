@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "command": "status",
+  "state": "error",
+  "reason": "evidence_corrupt",
+  "repository": {
+    "root": "/repo",
+    "dirty": false
+  },
+  "error": {
+    "code": "evidence_corrupt",
+    "message": "loading latest evidence: invalid JSON"
+  }
+}

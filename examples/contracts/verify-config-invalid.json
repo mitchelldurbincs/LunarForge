@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "command": "verify",
+  "state": "blocked",
+  "reason": "config_invalid",
+  "repository": {
+    "root": "/repo",
+    "dirty": false
+  },
+  "error": {
+    "code": "config_invalid",
+    "message": "unsupported config version 999 (expected 1)"
+  }
+}
