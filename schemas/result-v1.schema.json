@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LunarForge CLI result, schema version 1",
+  "description": "The stdout envelope from verify --json, status --json, and ci --json. This is not the on-disk evidence.json format. Unknown fields are allowed for additive evolution.",
+  "type": "object",
+  "required": ["schema_version", "command", "state", "reason", "repository"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": { "enum": ["verify", "status", "ci"] },
+    "state": { "$ref": "#/$defs/state" },
+    "reason": { "type": "string", "minLength": 1 },
+    "repository": {
+      "type": "object",
+      "required": ["dirty"],
+      "properties": {
+        "root": { "type": "string" },
+        "branch": { "type": "string" },
+        "head": { "$ref": "#/$defs/head" },
+        "dirty": { "type": "boolean" },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" }
+      }
+    },
+    "run": { "$ref": "#/$defs/run" },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" }
+      }
+    }
+  },
+  "dependentRequired": { "run": ["checks"], "checks": ["run"] },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "enum": ["pass", "fail", "stale"] } } },
+      "then": {
+        "required": ["run", "checks"],
+        "properties": {
+          "repository": { "required": ["root", "branch", "head", "dirty", "fingerprint"] }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "state": { "enum": ["pass", "fail", "stale", "blocked", "error"] },
+    "head": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{4,64}|\\(none\\))$",
+      "description": "New snapshots use the full Git object ID. Historical schema-1 evidence can contain abbreviated IDs. An unborn repository uses (none)."
+    },
+    "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "run": {
+      "type": "object",
+      "required": ["id", "evidence_path", "started_at", "finished_at", "state", "reason", "branch", "head", "dirty", "fingerprint", "final_fingerprint"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "evidence_path": { "type": "string", "minLength": 1 },
+        "started_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "state": { "$ref": "#/$defs/state" },
+        "reason": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string" },
+        "head": { "$ref": "#/$defs/head" },
+        "dirty": { "type": "boolean" },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "final_fingerprint": { "$ref": "#/$defs/fingerprint" }
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "run", "state", "reason", "exit_code", "duration_ms", "timeout_ms"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "run": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["pass", "fail", "blocked", "skipped"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "exit_code": { "type": "integer" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "stdout_path": { "type": "string" },
+        "stderr_path": { "type": "string" },
+        "stdout_tail": { "type": "string" },
+        "stderr_tail": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    }
+  }
+}

@@ -166,6 +166,13 @@ and build policy should remain in `.lunarforge.yml`.
 
 ## Programmatic contract
 
+For consumer implementations, use the [integration guide](docs/integration-contract.md),
+[result schema](schemas/result-v1.schema.json), and
+[complete response fixtures](examples/contracts/README.md). A practical
+[Yuheng walkthrough](docs/yuheng.md) covers passive observation and explicit
+native verification. The [policy schema](schemas/config-v1.schema.json) supports
+configuration editor validation.
+
 `lf verify --json` and `lf status --json` emit schema version 1. A shortened
 successful result looks like this:
 
@@ -178,7 +185,7 @@ successful result looks like this:
   "repository": {
     "root": "/repo",
     "branch": "main",
-    "head": "abc1234",
+    "head": "0123456789abcdef0123456789abcdef01234567",
     "dirty": false,
     "fingerprint": "sha256:..."
   },
@@ -190,7 +197,7 @@ successful result looks like this:
     "state": "pass",
     "reason": "checks_passed",
     "branch": "main",
-    "head": "abc1234",
+    "head": "0123456789abcdef0123456789abcdef01234567",
     "dirty": false,
     "fingerprint": "sha256:...",
     "final_fingerprint": "sha256:..."
@@ -242,6 +249,9 @@ Stable reason codes include:
 
 Consumers should branch on `state` and `reason`, not message text. `checks[]`
 is the repair input; files under `.lf/` are durable detail and audit evidence.
+`run` and `checks` are absent when no usable run exists, including
+`blocked / no_evidence`. A nonzero process exit can still carry a valid JSON
+result. New runs use full commit IDs; older evidence retains its recorded IDs.
 
 ## Hermes workflow
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "command": "status",
+  "state": "blocked",
+  "reason": "no_evidence",
+  "repository": {
+    "root": "/repo",
+    "branch": "main",
+    "head": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false,
+    "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

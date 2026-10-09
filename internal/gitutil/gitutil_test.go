@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,27 @@ func TestIsRepo(t *testing.T) {
 	}
 	if IsRepo(t.TempDir()) {
 		t.Error("expected IsRepo=false for non-git dir")
+	}
+}
+
+func TestSnapshotUsesFullHead(t *testing.T) {
+	dir := gitInit(t)
+	mustGit(t, dir, "config", "core.abbrev", "12")
+	want, err := run(dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, detached := range []bool{false, true} {
+		if detached {
+			mustGit(t, dir, "checkout", "--detach")
+		}
+		got, err := Snapshot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Head != strings.TrimSpace(want) {
+			t.Fatalf("detached=%t: HEAD = %q, want full object ID %q", detached, got.Head, strings.TrimSpace(want))
+		}
 	}
 }
 

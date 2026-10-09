@@ -39,7 +39,9 @@ func Snapshot(dir string) (Info, error) {
 		// A repo with no commits yet has no HEAD; treat as unborn branch.
 		branch = "(unborn)"
 	}
-	head, err := run(dir, "rev-parse", "--short", "HEAD")
+	// Consumers compare this value with Git and other providers. Abbreviations
+	// depend on local Git configuration and cannot serve as an exact object ID.
+	head, err := run(dir, "rev-parse", "HEAD")
 	if err != nil {
 		head = "(none)"
 	}

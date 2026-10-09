@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "command": "status",
+  "state": "stale",
+  "reason": "snapshot_changed",
+  "repository": {
+    "root": "/repo",
+    "branch": "main",
+    "head": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": true,
+    "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "run": {
+    "id": "2026-10-09T12-00-00.000000000Z-a1b2c3d4",
+    "evidence_path": ".lf/runs/2026-10-09T12-00-00.000000000Z-a1b2c3d4/evidence.json",
+    "started_at": "2026-10-09T12:00:00Z",
+    "finished_at": "2026-10-09T12:00:01Z",
+    "state": "pass",
+    "reason": "checks_passed",
+    "branch": "main",
+    "head": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false,
+    "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "final_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "checks": [
+    {
+      "id": "test",
+      "run": "go test ./...",
+      "state": "pass",
+      "reason": "checks_passed",
+      "exit_code": 0,
+      "duration_ms": 814,
+      "timeout_ms": 1800000,
+      "stdout_path": ".lf/runs/2026-10-09T12-00-00.000000000Z-a1b2c3d4/checks/test.stdout.txt",
+      "stderr_path": ".lf/runs/2026-10-09T12-00-00.000000000Z-a1b2c3d4/checks/test.stderr.txt"
+    }
+  ]
+}
