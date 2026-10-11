@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,4 +52,26 @@ func (l *loaded) excludes() []string {
 // artifacts. This must match how the runner computes it at verify time.
 func (l *loaded) currentDiffHash() (string, error) {
 	return gitutil.DiffHash(l.repoDir, l.excludes()...)
+}
+
+// parseFlags stops command execution after help or a parse error. FlagSet has
+// already printed the usage or diagnostic, so main must not print it again.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return &exitError{code: 0}
+		}
+		return &exitError{code: 2}
+	}
+	return nil
+}
+
+// commandFailure preserves text-mode errors and emits the shared JSON envelope
+// and state-derived exit code for machine-readable commands.
+func commandFailure(asJSON bool, command, state, reason string, err error) error {
+	if !asJSON {
+		return err
+	}
+	writeJSON(jsonFailure(command, state, reason, err))
+	return &exitError{code: exitCodeForState(state)}
 }

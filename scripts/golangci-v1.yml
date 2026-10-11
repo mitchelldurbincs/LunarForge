@@ -1,0 +1,21 @@
+# Compatibility with golangci-lint 1.x; keep limits aligned with .golangci.yml.
+linters:
+  disable-all: true
+  enable:
+    - funlen
+    - gocognit
+    - lll
+
+linters-settings:
+  funlen:
+    lines: 100
+    statements: 50
+  gocognit:
+    min-complexity: 35
+  lll:
+    line-length: 180
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

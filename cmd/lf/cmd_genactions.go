@@ -17,8 +17,8 @@ func cmdGenActions(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: lf gen-actions [--install-ref VERSION] [--output PATH] [--force]")
 	}
-	if err := fs.Parse(args); err != nil {
-		return &exitError{code: 2}
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	l, err := load()

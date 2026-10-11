@@ -48,27 +48,57 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 	}
 	start = start.UTC()
 
-	excludes := evidence.ArtifactExcludes(opts.RepoDir, opts.EvidenceDir)
-	gitInfo, err := gitutil.Snapshot(opts.RepoDir, excludes...)
+	ev, runDir, err := prepareRun(opts, start)
 	if err != nil {
 		return nil, err
 	}
-	initialHash, err := gitutil.DiffHash(opts.RepoDir, excludes...)
+	if err := runChecks(ctx, cfg.Verify.Commands, opts, runDir, ev); err != nil {
+		return nil, err
+	}
+
+	finalHash, err := gitutil.DiffHash(opts.RepoDir, evidence.ArtifactExcludes(opts.RepoDir, opts.EvidenceDir)...)
 	if err != nil {
 		return nil, err
+	}
+	ev.FinalDiffHash = finalHash
+	if finalHash != ev.DiffHash {
+		ev.Result = evidence.ResultStale
+		ev.Reason = evidence.ReasonSnapshotChanged
+	}
+	ev.FinishedAt = time.Now().UTC()
+
+	if err := evidence.Write(opts.EvidenceDir, runDir, ev); err != nil {
+		return nil, err
+	}
+	if err := writeSummary(runDir, ev); err != nil {
+		return nil, err
+	}
+	return &Result{Evidence: ev, RunDir: runDir}, nil
+}
+
+// prepareRun captures the initial snapshot before creating any run artifacts.
+func prepareRun(opts Options, start time.Time) (*evidence.Evidence, string, error) {
+	excludes := evidence.ArtifactExcludes(opts.RepoDir, opts.EvidenceDir)
+	gitInfo, err := gitutil.Snapshot(opts.RepoDir, excludes...)
+	if err != nil {
+		return nil, "", err
+	}
+	initialHash, err := gitutil.DiffHash(opts.RepoDir, excludes...)
+	if err != nil {
+		return nil, "", err
 	}
 
 	runID := evidence.NewRunID(start)
 	runDir := evidence.RunDir(opts.EvidenceDir, runID)
 	cmdDir := filepath.Join(runDir, "checks")
 	if err := os.MkdirAll(opts.EvidenceDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating evidence dir: %w", err)
+		return nil, "", fmt.Errorf("creating evidence dir: %w", err)
 	}
 	if err := os.Mkdir(runDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating run dir: %w", err)
+		return nil, "", fmt.Errorf("creating run dir: %w", err)
 	}
 	if err := os.Mkdir(cmdDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating checks dir: %w", err)
+		return nil, "", fmt.Errorf("creating checks dir: %w", err)
 	}
 
 	ev := &evidence.Evidence{
@@ -87,15 +117,21 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 		},
 	}
 
+	return ev, runDir, nil
+}
+
+func runChecks(
+	ctx context.Context, commands []config.Command, opts Options, runDir string, ev *evidence.Evidence,
+) error {
 	stopReason := ""
-	for _, c := range cfg.Verify.Commands {
+	for _, c := range commands {
 		if stopReason != "" {
 			ev.Commands = append(ev.Commands, skipped(c, stopReason))
 			continue
 		}
-		rec, err := runOne(ctx, opts, cmdDir, c)
+		rec, err := runOne(ctx, opts, runDir, c)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		ev.Commands = append(ev.Commands, rec)
 		switch rec.Result {
@@ -116,27 +152,10 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 		}
 	}
 
-	finalHash, err := gitutil.DiffHash(opts.RepoDir, excludes...)
-	if err != nil {
-		return nil, err
-	}
-	ev.FinalDiffHash = finalHash
-	if finalHash != initialHash {
-		ev.Result = evidence.ResultStale
-		ev.Reason = evidence.ReasonSnapshotChanged
-	}
-	ev.FinishedAt = time.Now().UTC()
-
-	if err := evidence.Write(opts.EvidenceDir, runDir, ev); err != nil {
-		return nil, err
-	}
-	if err := writeSummary(runDir, ev); err != nil {
-		return nil, err
-	}
-	return &Result{Evidence: ev, RunDir: runDir}, nil
+	return nil
 }
 
-func runOne(parent context.Context, opts Options, cmdDir string, c config.Command) (evidence.Command, error) {
+func runOne(parent context.Context, opts Options, runDir string, c config.Command) (evidence.Command, error) {
 	started := time.Now().UTC()
 	timeout := c.Timeout()
 	rec := evidence.Command{
@@ -145,16 +164,16 @@ func runOne(parent context.Context, opts Options, cmdDir string, c config.Comman
 		StartedAt:  started,
 		TimeoutMs:  timeout.Milliseconds(),
 		ExitCode:   -1,
-		StdoutPath: filepath.Join("checks", c.ID+".stdout.txt"),
-		StderrPath: filepath.Join("checks", c.ID+".stderr.txt"),
+		StdoutPath: evidence.CheckStdoutPath(c.ID),
+		StderrPath: evidence.CheckStderrPath(c.ID),
 	}
 
-	stdoutFile, err := os.Create(filepath.Join(cmdDir, c.ID+".stdout.txt"))
+	stdoutFile, err := os.Create(filepath.Join(runDir, rec.StdoutPath))
 	if err != nil {
 		return rec, fmt.Errorf("creating stdout log for %s: %w", c.ID, err)
 	}
 	defer stdoutFile.Close()
-	stderrFile, err := os.Create(filepath.Join(cmdDir, c.ID+".stderr.txt"))
+	stderrFile, err := os.Create(filepath.Join(runDir, rec.StderrPath))
 	if err != nil {
 		return rec, fmt.Errorf("creating stderr log for %s: %w", c.ID, err)
 	}
