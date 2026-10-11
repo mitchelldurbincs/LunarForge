@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/mitchelldurbincs/lunarforge/internal/evidence"
@@ -54,6 +56,41 @@ func TestVerifyJSONContract(t *testing.T) {
 	}
 	if got.Repository.Fingerprint != got.Run.FinalFingerprint {
 		t.Fatalf("current and final fingerprints differ: %+v", got)
+	}
+}
+
+func TestVerifyJSONReportsUntrackedFilesWhenHiddenByGitConfig(t *testing.T) {
+	repo := newTestRepo(t, passingConfig)
+	cmd := exec.Command("git", "config", "status.showUntrackedFiles", "no")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("input\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := captureStdout(t, func() error { return cmdVerify([]string{"--json", "--quiet"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeResult(t, raw)
+	if got.Run == nil || !got.Repository.Dirty || !got.Run.Dirty {
+		t.Fatalf("untracked fingerprint input must make current and saved snapshots dirty: %+v", got)
+	}
+}
+
+func TestJSONFromEvidenceDoesNotUseSavedGitWhenCurrentGitUnavailable(t *testing.T) {
+	repo := t.TempDir()
+	l := &loaded{repoDir: repo, evidenceDir: filepath.Join(repo, evidence.DefaultDir)}
+	ev := &evidence.Evidence{Git: evidence.Git{Branch: "saved-branch", Head: "saved-head", Dirty: true}}
+
+	got := jsonFromEvidence("status", l, ev, "", "", "", "")
+
+	if got.Repository.Branch != "" || got.Repository.Head != "" || got.Repository.Dirty {
+		t.Fatalf("unavailable current Git must not inherit saved state: %+v", got.Repository)
+	}
+	if got.Run == nil || got.Run.Branch != ev.Git.Branch || got.Run.Head != ev.Git.Head || !got.Run.Dirty {
+		t.Fatalf("saved Git must remain available on the run: %+v", got.Run)
 	}
 }
 

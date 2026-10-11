@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,5 +129,21 @@ func TestWriteRejectsInconsistentStateAndChecks(t *testing.T) {
 	ev.Commands[0].Reason = ReasonCheckFailed
 	if err := Write(evidenceDir, RunDir(evidenceDir, runID), ev); err == nil {
 		t.Fatal("passing evidence must not contain a failed check")
+	}
+}
+
+func TestWriteRejectsUnsafeCheckID(t *testing.T) {
+	evidenceDir := filepath.Join(t.TempDir(), ".lf", "runs")
+	runID := NewRunID(time.Now())
+	ev := validEvidence(runID)
+	ev.Commands[0].ID = "../../../../escaped"
+
+	err := Write(evidenceDir, RunDir(evidenceDir, runID), ev)
+
+	if err == nil || !strings.Contains(err.Error(), ev.Commands[0].ID) {
+		t.Fatalf("expected unsafe check ID rejection, got %v", err)
+	}
+	if _, err := os.Lstat(evidenceDir); !os.IsNotExist(err) {
+		t.Fatalf("invalid evidence must not create the evidence directory: %v", err)
 	}
 }

@@ -67,3 +67,28 @@ func TestFindWalksUp(t *testing.T) {
 		t.Fatalf("Find = %q, want %q", got, want)
 	}
 }
+
+func TestValidateCheckID(t *testing.T) {
+	for _, tc := range []struct {
+		id    string
+		valid bool
+	}{
+		{"verify", true},
+		{"Build_1.test-check", true},
+		{"0", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"../../../../escaped", false},
+		{"a/b", false},
+		{`a\b`, false},
+		{"a b", false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			err := ValidateCheckID(tc.id)
+			if (err == nil) != tc.valid {
+				t.Fatalf("ValidateCheckID(%q) = %v, want valid=%t", tc.id, err, tc.valid)
+			}
+		})
+	}
+}

@@ -199,3 +199,65 @@ func mustGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+func TestDiffHashIgnoresUntrackedStatusPreference(t *testing.T) {
+	dir := gitInit(t)
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("input"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "config", "status.showUntrackedFiles", "normal")
+	want, err := DiffHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "config", "status.showUntrackedFiles", "no")
+
+	got, err := DiffHash(dir)
+
+	if err != nil || got != want {
+		t.Fatalf("Git display preferences must not change the fingerprint: got %q, want %q, err=%v", got, want, err)
+	}
+}
+
+func TestSnapshotExcludesArtifacts(t *testing.T) {
+	dir := gitInit(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".lf", "runs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".lf", "latest"), []byte("run-id"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Snapshot(dir, ".lf")
+
+	if err != nil || got.Dirty || got.StatusPorcelain != "" {
+		t.Fatalf("artifacts must not dirty the snapshot: %+v, err=%v", got, err)
+	}
+}
+
+func TestDiffHashHandlesNestedUntrackedRepository(t *testing.T) {
+	dir := gitInit(t)
+	nested := filepath.Join(dir, "nested")
+	mustGit(t, dir, "init", nested)
+	path := filepath.Join(nested, "input.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := DiffHash(dir)
+	if err != nil {
+		t.Fatalf("fingerprinting nested repository: %v", err)
+	}
+	again, err := DiffHash(dir)
+	if err != nil || again != before {
+		t.Fatalf("nested repository fingerprint must be deterministic: %q, %q, %v", before, again, err)
+	}
+	if err := os.WriteFile(path, []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := DiffHash(dir)
+
+	if err != nil || after == before {
+		t.Fatalf("nested file mutation must change the fingerprint: %q, %q, %v", before, after, err)
+	}
+}

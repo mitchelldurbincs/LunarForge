@@ -73,8 +73,8 @@ func jsonFromEvidence(command string, l *loaded, ev *evidence.Evidence, runDir, 
 	if reason == "" {
 		reason = ev.Reason
 	}
-	currentGit := ev.Git
-	if info, err := gitutil.Snapshot(l.repoDir); err == nil {
+	var currentGit evidence.Git
+	if info, err := gitutil.Snapshot(l.repoDir, l.excludes()...); err == nil {
 		currentGit = evidence.Git{Branch: info.Branch, Head: info.Head, Dirty: info.Dirty}
 	}
 	out := JSONResult{
