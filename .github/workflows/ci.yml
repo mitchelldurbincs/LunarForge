@@ -19,6 +19,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Static analysis gates
+        run: bash scripts/check-cognitive.sh
       - name: Build branch binary
         run: go build -o lf ./cmd/lf
       - name: Verify with LunarForge
