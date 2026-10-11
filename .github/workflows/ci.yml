@@ -19,7 +19,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Cognitive complexity gate
+      - name: Static analysis gates
         run: bash scripts/check-cognitive.sh
       - name: Build branch binary
         run: go build -o lf ./cmd/lf
