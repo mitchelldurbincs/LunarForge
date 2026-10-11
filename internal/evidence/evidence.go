@@ -9,10 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/mitchelldurbincs/lunarforge/internal/config"
 )
 
 const (
@@ -40,9 +41,8 @@ const (
 )
 
 var (
-	ErrNoEvidence  = errors.New("no LunarForge evidence")
-	runCounter     atomic.Uint64
-	checkIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	ErrNoEvidence = errors.New("no LunarForge evidence")
+	runCounter    atomic.Uint64
 )
 
 // Evidence is both the durable run record and the source for JSON CLI output.
@@ -232,8 +232,8 @@ func validate(e *Evidence) error {
 	}
 	hasFailed, hasBlocked, allPassed := false, false, true
 	for _, c := range e.Commands {
-		if !checkIDPattern.MatchString(c.ID) {
-			return fmt.Errorf("invalid evidence check id %q", c.ID)
+		if err := config.ValidateCheckID(c.ID); err != nil {
+			return fmt.Errorf("invalid evidence: %w", err)
 		}
 		if !validResult(c.Result, true) {
 			return fmt.Errorf("check %q has invalid state %q", c.ID, c.Result)

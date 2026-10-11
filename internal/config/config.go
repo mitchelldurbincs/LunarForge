@@ -21,6 +21,14 @@ const (
 
 var commandIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// ValidateCheckID rejects IDs that cannot safely name a check's log files.
+func ValidateCheckID(id string) error {
+	if !commandIDPattern.MatchString(id) {
+		return fmt.Errorf("check id %q must match %s", id, commandIDPattern)
+	}
+	return nil
+}
+
 // Config deliberately contains only repository quality policy. Agent choice,
 // retry behavior, evidence paths, and CI presentation belong to callers.
 type Config struct {
@@ -118,8 +126,8 @@ func (c *Config) validate() error {
 	}
 	seen := map[string]bool{}
 	for i, cmd := range c.Verify.Commands {
-		if !commandIDPattern.MatchString(cmd.ID) {
-			return fmt.Errorf("verify.commands[%d].id %q must match %s", i, cmd.ID, commandIDPattern)
+		if err := ValidateCheckID(cmd.ID); err != nil {
+			return fmt.Errorf("verify.commands[%d].id: %w", i, err)
 		}
 		if strings.TrimSpace(cmd.Run) == "" {
 			return fmt.Errorf("verify.commands[%d] (%s).run is required", i, cmd.ID)

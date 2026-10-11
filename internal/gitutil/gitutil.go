@@ -30,7 +30,8 @@ func IsRepo(dir string) bool {
 }
 
 // Snapshot collects branch, HEAD, and porcelain status for evidence records.
-func Snapshot(dir string) (Info, error) {
+// Pass the same repo-relative excludes used by DiffHash.
+func Snapshot(dir string, excludes ...string) (Info, error) {
 	if !IsRepo(dir) {
 		return Info{}, fmt.Errorf("not inside a git repository")
 	}
@@ -45,7 +46,7 @@ func Snapshot(dir string) (Info, error) {
 	if err != nil {
 		head = "(none)"
 	}
-	status, err := run(dir, "status", "--porcelain")
+	status, err := run(dir, withExcludes([]string{"status", "--porcelain", "--untracked-files=normal"}, excludes)...)
 	if err != nil {
 		return Info{}, fmt.Errorf("git status: %w", err)
 	}
@@ -66,6 +67,7 @@ func Snapshot(dir string) (Info, error) {
 //	git diff --cached --binary
 //	git status --porcelain
 //	contents of every untracked, non-ignored file
+//	fingerprints of untracked nested repositories
 //
 // If HEAD advances, or tracked/staged changes change after `lf verify`, the
 // hash changes and evidence becomes stale. The returned value is prefixed with
@@ -93,18 +95,16 @@ func DiffHash(dir string, excludes ...string) (string, error) {
 	h.Write(head)
 
 	parts := [][]string{
-		{"diff", "--binary"},
-		{"diff", "--cached", "--binary"},
+		{"diff", "--no-ext-diff", "--no-textconv", "--binary"},
+		{"diff", "--no-ext-diff", "--no-textconv", "--cached", "--binary"},
 		{"status", "--porcelain"},
 	}
 	for _, args := range parts {
 		full := append([]string{}, args...)
-		if len(excludes) > 0 {
-			full = append(full, "--", ".")
-			for _, e := range excludes {
-				full = append(full, ":(exclude)"+e)
-			}
+		if args[0] == "status" {
+			full = append(full, "--untracked-files=normal")
 		}
+		full = withExcludes(full, excludes)
 		out, err := runBytes(dir, full...)
 		if err != nil {
 			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
@@ -124,13 +124,7 @@ func DiffHash(dir string, excludes ...string) (string, error) {
 // includes an untracked path but not its bytes, so editing the same untracked
 // file used to leave evidence looking fresh.
 func hashUntracked(h interface{ Write([]byte) (int, error) }, dir string, excludes []string) error {
-	args := []string{"ls-files", "--others", "--exclude-standard", "-z"}
-	if len(excludes) > 0 {
-		args = append(args, "--", ".")
-		for _, e := range excludes {
-			args = append(args, ":(exclude)"+e)
-		}
-	}
+	args := withExcludes([]string{"ls-files", "--others", "--exclude-standard", "-z"}, excludes)
 	out, err := runBytes(dir, args...)
 	if err != nil {
 		return fmt.Errorf("git ls-files --others: %w", err)
@@ -143,28 +137,63 @@ func hashUntracked(h interface{ Write([]byte) (int, error) }, dir string, exclud
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		full := filepath.Join(dir, filepath.FromSlash(path))
-		info, err := os.Lstat(full)
-		if err != nil {
-			return fmt.Errorf("reading untracked file %s: %w", path, err)
+		if err := hashUntrackedPath(h, dir, path); err != nil {
+			return err
 		}
-		var data []byte
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(full)
-			if err != nil {
-				return fmt.Errorf("reading untracked symlink %s: %w", path, err)
-			}
-			data = []byte(target)
-		} else {
-			data, err = os.ReadFile(full)
-			if err != nil {
-				return fmt.Errorf("reading untracked file %s: %w", path, err)
-			}
-		}
-		fmt.Fprintf(h, "untracked:%d:%s:mode:%s:size:%d:", len(path), path, info.Mode(), len(data))
-		h.Write(data)
 	}
 	return nil
+}
+
+// hashUntrackedPath treats nested repositories as filesystem data, never as
+// trusted Git configuration. Include all entries (even ignored files and .git
+// metadata) conservatively, without following symlinks or opening special files.
+func hashUntrackedPath(h interface{ Write([]byte) (int, error) }, dir, path string) error {
+	full := filepath.Join(dir, filepath.FromSlash(path))
+	info, err := os.Lstat(full)
+	if err != nil {
+		return fmt.Errorf("reading untracked path %s: %w", path, err)
+	}
+	var data []byte
+	switch {
+	case info.IsDir():
+	case info.Mode()&os.ModeSymlink != 0:
+		var target string
+		target, err = os.Readlink(full)
+		data = []byte(target)
+	case info.Mode().IsRegular():
+		data, err = os.ReadFile(full)
+	default:
+		return fmt.Errorf("unsupported untracked file type %s: %s", path, info.Mode())
+	}
+	if err != nil {
+		return fmt.Errorf("reading untracked path %s: %w", path, err)
+	}
+	fmt.Fprintf(h, "untracked:%d:%s:mode:%s:size:%d:", len(path), path, info.Mode(), len(data))
+	h.Write(data)
+	if info.IsDir() {
+		// ReadDir sorts entries by name, keeping traversal deterministic.
+		entries, err := os.ReadDir(full)
+		if err != nil {
+			return fmt.Errorf("reading untracked directory %s: %w", path, err)
+		}
+		for _, entry := range entries {
+			child := filepath.ToSlash(filepath.Join(path, entry.Name()))
+			if err := hashUntrackedPath(h, dir, child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func withExcludes(args, excludes []string) []string {
+	if len(excludes) > 0 {
+		args = append(args, "--", ".")
+		for _, e := range excludes {
+			args = append(args, ":(exclude)"+e)
+		}
+	}
+	return args
 }
 
 func run(dir string, args ...string) (string, error) {
@@ -173,6 +202,10 @@ func run(dir string, args ...string) (string, error) {
 }
 
 func runBytes(dir string, args ...string) ([]byte, error) {
+	// These are read-only operations; configured monitors and hooks must not
+	// execute, including during status and ls-files. Keep submodule diffs short
+	// so diff never delegates to a nested repository's configuration.
+	args = append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "diff.submodule=short"}, args...)
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer

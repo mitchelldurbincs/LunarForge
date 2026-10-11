@@ -33,6 +33,11 @@ type Result struct {
 }
 
 func Run(cfg *config.Config, opts Options) (*Result, error) {
+	for _, c := range cfg.Verify.Commands {
+		if err := config.ValidateCheckID(c.ID); err != nil {
+			return nil, err
+		}
+	}
 	ctx := opts.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -43,11 +48,11 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 	}
 	start = start.UTC()
 
-	gitInfo, err := gitutil.Snapshot(opts.RepoDir)
+	excludes := evidence.ArtifactExcludes(opts.RepoDir, opts.EvidenceDir)
+	gitInfo, err := gitutil.Snapshot(opts.RepoDir, excludes...)
 	if err != nil {
 		return nil, err
 	}
-	excludes := evidence.ArtifactExcludes(opts.RepoDir, opts.EvidenceDir)
 	initialHash, err := gitutil.DiffHash(opts.RepoDir, excludes...)
 	if err != nil {
 		return nil, err
@@ -122,10 +127,10 @@ func Run(cfg *config.Config, opts Options) (*Result, error) {
 	}
 	ev.FinishedAt = time.Now().UTC()
 
-	if err := writeSummary(runDir, ev); err != nil {
+	if err := evidence.Write(opts.EvidenceDir, runDir, ev); err != nil {
 		return nil, err
 	}
-	if err := evidence.Write(opts.EvidenceDir, runDir, ev); err != nil {
+	if err := writeSummary(runDir, ev); err != nil {
 		return nil, err
 	}
 	return &Result{Evidence: ev, RunDir: runDir}, nil

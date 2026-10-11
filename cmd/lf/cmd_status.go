@@ -58,7 +58,7 @@ func cmdStatus(args []string) error {
 
 	if *asJSON {
 		if ev == nil {
-			info, _ := gitutil.Snapshot(l.repoDir)
+			info, _ := gitutil.Snapshot(l.repoDir, l.excludes()...)
 			out := JSONResult{
 				SchemaVersion: resultSchemaVersion,
 				Command:       "status",

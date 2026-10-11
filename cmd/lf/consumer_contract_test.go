@@ -115,8 +115,6 @@ func TestCLIConsumerContract(t *testing.T) {
 				cfg = "version: 1\nverify:\n  commands:\n    - id: ok\n      run: echo check-output\n"
 			}
 			repo := newTestRepo(t, cfg)
-			// Ignore artifacts so clean-HEAD checks match a configured consumer.
-			write(t, filepath.Join(repo, ".git", "info", "exclude"), ".lf/\n")
 			headCmd := exec.Command("git", "rev-parse", "HEAD")
 			headRaw, err := headCmd.Output()
 			if err != nil {
