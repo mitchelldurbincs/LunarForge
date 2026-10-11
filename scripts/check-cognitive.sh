@@ -28,3 +28,12 @@ awk '
     }
     END { exit failed }
 ' .gocognit-baseline "$scratch/report"
+# Staticcheck bug classes only (style checks live out of scope), type-checked
+# with the repo's own toolchain so export data always matches.
+TMPDIR=/tmp GOFLAGS=-mod=mod go run honnef.co/go/tools/cmd/staticcheck@v0.8.1     -checks='SA*' -tests=false ./... >/dev/null
+
+# Curated go-critic diagnostic checks (style checkers excluded; rangeValCopy
+# calibrated to 256 bytes so structural-gate PRs stay mechanical).
+TMPDIR=/tmp GOFLAGS=-mod=mod go run github.com/go-critic/go-critic/cmd/gocritic@v0.15.0 \
+    check -enable=appendAssign,appendCombine,boolExprSimplify,deferInLoop,exitAfterDefer,filepathJoin,ifElseChain,rangeValCopy,shift,singleCaseSwitch,sloppyLen,sloppyTypeAssign,underef,unlabelStmt,unslice \
+    -@rangeValCopy.sizeThreshold=256 ./... >/dev/null
