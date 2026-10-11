@@ -1,6 +1,9 @@
 #!/bin/sh
 # Pinned tool and transient reports stay outside the repository.
 set -eu
+# staticcheck@v0.8.1 needs a Go toolchain newer than some CI runners ship;
+# auto lets go run fetch exactly what it needs (pinned module versions unchanged).
+export GOTOOLCHAIN=auto
 scratch=$(mktemp -d /tmp/lunarforge-gocognit.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 TMPDIR=/tmp GOBIN="$scratch" go install github.com/uudashr/gocognit/cmd/gocognit@v1.2.0
