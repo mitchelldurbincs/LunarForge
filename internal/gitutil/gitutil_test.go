@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -259,5 +260,59 @@ func TestDiffHashHandlesNestedUntrackedRepository(t *testing.T) {
 
 	if err != nil || after == before {
 		t.Fatalf("nested file mutation must change the fingerprint: %q, %q, %v", before, after, err)
+	}
+}
+
+func TestDiffHashDoesNotExecuteConfiguredPrograms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sentinel script requires a POSIX shell")
+	}
+	for _, repoPath := range []string{".", "nested"} {
+		for _, key := range []string{"diff.external", "diff.sentinel.textconv", "core.fsmonitor"} {
+			t.Run(repoPath+"/"+key, func(t *testing.T) {
+				// Arrange both staged and unstaged changes that would invoke a driver.
+				dir := gitInit(t)
+				repo := filepath.Join(dir, repoPath)
+				mustGit(t, dir, "init", repo)
+				mustGit(t, repo, "config", "user.email", "test@example.com")
+				mustGit(t, repo, "config", "user.name", "Test")
+				path := filepath.Join(repo, "input.txt")
+				if err := os.WriteFile(path, []byte("committed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("*.txt diff=sentinel\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repo, "add", ".")
+				mustGit(t, repo, "commit", "-m", "tracked input")
+				if err := os.WriteFile(path, []byte("staged\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repo, "add", "input.txt")
+				if err := os.WriteFile(path, []byte("unstaged\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				scratch := t.TempDir()
+				sentinel := filepath.Join(scratch, "executed")
+				t.Setenv("LF_TEST_SENTINEL", sentinel)
+				script := filepath.Join(scratch, "driver")
+				if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf executed > \"$LF_TEST_SENTINEL\"\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repo, "config", key, script)
+
+				// Act: fingerprint twice without trusting either repository's drivers.
+				first, firstErr := DiffHash(dir)
+				again, againErr := DiffHash(dir)
+
+				// Assert: no configured program ran and the result is deterministic.
+				if _, err := os.Lstat(sentinel); !os.IsNotExist(err) {
+					t.Fatalf("fingerprinting executed %s: sentinel stat error = %v", key, err)
+				}
+				if firstErr != nil || againErr != nil || first != again {
+					t.Fatalf("fingerprint must be deterministic: %q (%v), %q (%v)", first, firstErr, again, againErr)
+				}
+			})
+		}
 	}
 }

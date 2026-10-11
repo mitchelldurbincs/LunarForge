@@ -145,6 +145,33 @@ func TestStatusJSONDistinguishesNoEvidence(t *testing.T) {
 	}
 }
 
+func TestStatusJSONExcludesArtifactsWithoutGitExclude(t *testing.T) {
+	// Arrange an artifact directory with no Git ignore rule and no evidence yet.
+	repo := newTestRepo(t, passingConfig)
+	if err := os.Remove(filepath.Join(repo, ".git", "info", "exclude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".lf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".lf", "artifact.log"), []byte("artifact\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Act: exercise the no-evidence JSON branch of cmdStatus.
+	raw, err := captureStdout(t, func() error { return cmdStatus([]string{"--json"}) })
+
+	// Assert: local artifacts do not dirty the current repository snapshot.
+	ee, ok := err.(*exitError)
+	if !ok || ee.code != 2 {
+		t.Fatalf("error = %#v, want exit 2", err)
+	}
+	got := decodeResult(t, raw)
+	if got.State != evidence.ResultBlocked || got.Reason != evidence.ReasonNoEvidence || got.Run != nil || got.Repository.Dirty {
+		t.Fatalf("artifacts must not dirty status without evidence: %+v", got)
+	}
+}
+
 func TestStatusJSONReportsCorruptEvidence(t *testing.T) {
 	repo := newTestRepo(t, passingConfig)
 	if err := cmdVerify([]string{"--quiet"}); err != nil {

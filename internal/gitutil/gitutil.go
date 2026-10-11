@@ -95,8 +95,8 @@ func DiffHash(dir string, excludes ...string) (string, error) {
 	h.Write(head)
 
 	parts := [][]string{
-		{"diff", "--binary"},
-		{"diff", "--cached", "--binary"},
+		{"diff", "--no-ext-diff", "--no-textconv", "--binary"},
+		{"diff", "--no-ext-diff", "--no-textconv", "--cached", "--binary"},
 		{"status", "--porcelain"},
 	}
 	for _, args := range parts {
@@ -137,34 +137,51 @@ func hashUntracked(h interface{ Write([]byte) (int, error) }, dir string, exclud
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		full := filepath.Join(dir, filepath.FromSlash(path))
-		info, err := os.Lstat(full)
+		if err := hashUntrackedPath(h, dir, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hashUntrackedPath treats nested repositories as filesystem data, never as
+// trusted Git configuration. Include all entries (even ignored files and .git
+// metadata) conservatively, without following symlinks or opening special files.
+func hashUntrackedPath(h interface{ Write([]byte) (int, error) }, dir, path string) error {
+	full := filepath.Join(dir, filepath.FromSlash(path))
+	info, err := os.Lstat(full)
+	if err != nil {
+		return fmt.Errorf("reading untracked path %s: %w", path, err)
+	}
+	var data []byte
+	switch {
+	case info.IsDir():
+	case info.Mode()&os.ModeSymlink != 0:
+		var target string
+		target, err = os.Readlink(full)
+		data = []byte(target)
+	case info.Mode().IsRegular():
+		data, err = os.ReadFile(full)
+	default:
+		return fmt.Errorf("unsupported untracked file type %s: %s", path, info.Mode())
+	}
+	if err != nil {
+		return fmt.Errorf("reading untracked path %s: %w", path, err)
+	}
+	fmt.Fprintf(h, "untracked:%d:%s:mode:%s:size:%d:", len(path), path, info.Mode(), len(data))
+	h.Write(data)
+	if info.IsDir() {
+		// ReadDir sorts entries by name, keeping traversal deterministic.
+		entries, err := os.ReadDir(full)
 		if err != nil {
-			return fmt.Errorf("reading untracked file %s: %w", path, err)
+			return fmt.Errorf("reading untracked directory %s: %w", path, err)
 		}
-		var data []byte
-		if info.IsDir() {
-			// Git lists an untracked nested repository as one directory rather
-			// than listing its files. Bind its content using the same fingerprint.
-			nestedHash, err := DiffHash(full)
-			if err != nil {
-				return fmt.Errorf("reading untracked repository %s: %w", path, err)
-			}
-			data = []byte(nestedHash)
-		} else if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(full)
-			if err != nil {
-				return fmt.Errorf("reading untracked symlink %s: %w", path, err)
-			}
-			data = []byte(target)
-		} else {
-			data, err = os.ReadFile(full)
-			if err != nil {
-				return fmt.Errorf("reading untracked file %s: %w", path, err)
+		for _, entry := range entries {
+			child := filepath.ToSlash(filepath.Join(path, entry.Name()))
+			if err := hashUntrackedPath(h, dir, child); err != nil {
+				return err
 			}
 		}
-		fmt.Fprintf(h, "untracked:%d:%s:mode:%s:size:%d:", len(path), path, info.Mode(), len(data))
-		h.Write(data)
 	}
 	return nil
 }
@@ -185,6 +202,10 @@ func run(dir string, args ...string) (string, error) {
 }
 
 func runBytes(dir string, args ...string) ([]byte, error) {
+	// These are read-only operations; configured monitors and hooks must not
+	// execute, including during status and ls-files. Keep submodule diffs short
+	// so diff never delegates to a nested repository's configuration.
+	args = append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "diff.submodule=short"}, args...)
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer

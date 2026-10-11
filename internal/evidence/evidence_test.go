@@ -140,7 +140,7 @@ func TestWriteRejectsUnsafeCheckID(t *testing.T) {
 
 	err := Write(evidenceDir, RunDir(evidenceDir, runID), ev)
 
-	if err == nil || !strings.Contains(err.Error(), ev.Commands[0].ID) {
+	if err == nil || !strings.Contains(err.Error(), ev.Commands[0].ID) || !strings.Contains(err.Error(), "must match ^[A-Za-z0-9][A-Za-z0-9._-]*$") {
 		t.Fatalf("expected unsafe check ID rejection, got %v", err)
 	}
 	if _, err := os.Lstat(evidenceDir); !os.IsNotExist(err) {

@@ -123,7 +123,7 @@ func TestRunRejectsUnsafeCheckIDBeforeSideEffects(t *testing.T) {
 
 	res, err := Run(cfg, Options{RepoDir: dir, EvidenceDir: filepath.Join(dir, evidence.DefaultDir)})
 
-	if err == nil || !strings.Contains(err.Error(), unsafeID) || res != nil {
+	if err == nil || !strings.Contains(err.Error(), unsafeID) || !strings.Contains(err.Error(), "must match ^[A-Za-z0-9][A-Za-z0-9._-]*$") || res != nil {
 		t.Fatalf("expected unsafe ID rejection, got result=%+v, err=%v", res, err)
 	}
 	for _, name := range []string{".lf", "executed.txt", "escaped.stdout.txt", "escaped.stderr.txt"} {
