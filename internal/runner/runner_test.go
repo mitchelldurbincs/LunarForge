@@ -177,3 +177,57 @@ func assertNoSummary(t *testing.T, evidenceDir string) {
 		t.Fatalf("summary must not exist after evidence failure: %v", err)
 	}
 }
+
+func TestRunKeepGoingPreservesBlockedPrecedence(t *testing.T) {
+	failed := config.Command{ID: "failed", Run: "exit 7"}
+	blocked := config.Command{ID: "blocked", Run: "lunarforge-command-that-does-not-exist"}
+	passed := config.Command{ID: "passed", Run: "true"}
+	for _, tc := range []struct {
+		name     string
+		commands []config.Command
+	}{
+		{"failure-first", []config.Command{failed, blocked, passed}},
+		{"blocked-first", []config.Command{blocked, failed, passed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := gitRepo(t)
+			cfg := &config.Config{Version: 1, Verify: config.Verify{Commands: tc.commands}}
+
+			res, err := Run(cfg, Options{
+				RepoDir: dir, EvidenceDir: filepath.Join(dir, evidence.DefaultDir), KeepGoing: true,
+			})
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Evidence.Result != evidence.ResultBlocked || res.Evidence.Reason != evidence.ReasonToolUnavailable {
+				t.Fatalf("blocked must take precedence over failure: %+v", res.Evidence)
+			}
+			if len(res.Evidence.Commands) != 3 || res.Evidence.Commands[2].Result != evidence.ResultPassed {
+				t.Fatalf("keep-going must execute all checks: %+v", res.Evidence.Commands)
+			}
+			if _, err := evidence.Load(res.RunDir); err != nil {
+				t.Fatalf("saved mixed-state evidence must remain readable: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunWritesMatchingCheckLogPaths(t *testing.T) {
+	dir := gitRepo(t)
+	res := run(t, dir, config.Command{ID: "Build_1.test-2", Run: "echo output; echo error >&2"})
+	check := res.Evidence.Commands[0]
+	if filepath.ToSlash(check.StdoutPath) != "checks/Build_1.test-2.stdout.txt" ||
+		filepath.ToSlash(check.StderrPath) != "checks/Build_1.test-2.stderr.txt" {
+		t.Fatalf("unexpected log paths: %+v", check)
+	}
+	for path, want := range map[string]string{check.StdoutPath: "output\n", check.StderrPath: "error\n"} {
+		got, err := os.ReadFile(filepath.Join(res.RunDir, path))
+		if err != nil || string(got) != want {
+			t.Fatalf("log %s = %q, %v; want %q", path, got, err, want)
+		}
+	}
+	if _, err := evidence.Load(res.RunDir); err != nil {
+		t.Fatalf("saved log paths must pass evidence validation: %v", err)
+	}
+}

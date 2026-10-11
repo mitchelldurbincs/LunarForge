@@ -91,7 +91,7 @@ func jsonFromEvidence(command string, l *loaded, ev *evidence.Evidence, runDir, 
 		},
 		Run: &JSONRun{
 			ID:               ev.RunID,
-			EvidencePath:     relPath(l.repoDir, filepath.Join(runDir, "evidence.json")),
+			EvidencePath:     relPath(l.repoDir, filepath.Join(runDir, evidence.FileName)),
 			StartedAt:        ev.StartedAt,
 			FinishedAt:       ev.FinishedAt,
 			State:            ev.Result,

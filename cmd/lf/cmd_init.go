@@ -15,7 +15,7 @@ func cmdInit(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: lf init [--force]\n\nCreates .lunarforge.yml and .lf/ in the current directory.\n")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 

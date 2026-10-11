@@ -22,4 +22,19 @@ go build ./...
 echo "==> go test"
 go test ./...
 
+# The optional lint gate supports both installed major versions. Once available,
+# lint findings and tool failures fail verification; only an absent tool skips.
+if command -v golangci-lint >/dev/null 2>&1; then
+  echo "==> funlen, gocognit, lll"
+  lint_version="$(golangci-lint version)"
+  case "$lint_version" in
+    *" version v1."*|*" version 1."*) lint_config="scripts/golangci-v1.yml" ;;
+    *" version v2."*|*" version 2."*) lint_config=".golangci.yml" ;;
+    *) echo "unsupported golangci-lint version: $lint_version" >&2; exit 1 ;;
+  esac
+  golangci-lint run --config "$lint_config" ./...
+else
+  echo "==> skipping funlen, gocognit, lll (golangci-lint not installed)"
+fi
+
 echo "verify.sh: all checks passed"

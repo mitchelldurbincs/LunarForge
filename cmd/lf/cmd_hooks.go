@@ -14,7 +14,7 @@ func cmdInstallHooks(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: lf install-hooks\n\nInstalls a pre-push hook that requires fresh passing evidence.\n")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 

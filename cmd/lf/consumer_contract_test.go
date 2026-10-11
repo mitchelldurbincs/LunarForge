@@ -50,148 +50,281 @@ func TestCLIConsumerContract(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture checks use POSIX shell commands")
 	}
-	schema := contractSchema(t, "result")
+	cli := contractCLI{binary: buildCLI(t), schema: contractSchema(t, "result")}
+	t.Run("passing", cli.testPassing)
+	t.Run("failed-and-skipped", cli.testFailed)
+	t.Run("blocked-and-skipped", cli.testUnavailable)
+	t.Run("timed-out", cli.testTimeout)
+	t.Run("status-stale", cli.testStaleStatus)
+	t.Run("verify-stale", cli.testStaleVerify)
+	t.Run("no-evidence", cli.testNoEvidence)
+	t.Run("config-invalid", cli.testInvalidConfig)
+	t.Run("evidence-corrupt", cli.testCorruptEvidence)
+	t.Run("legacy-evidence", cli.testLegacyEvidence)
+}
+
+type contractCLI struct {
+	binary string
+	schema *jsonschema.Schema
+}
+
+func buildCLI(t *testing.T) string {
+	t.Helper()
 	binary := filepath.Join(t.TempDir(), "lf")
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, out)
 	}
+	return binary
+}
 
-	invoke := func(t *testing.T, repo string, wantExit int, args ...string) map[string]any {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, binary, args...)
-		cmd.Dir = repo
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		err := cmd.Run()
-		if ctx.Err() != nil {
-			t.Fatal(ctx.Err())
-		}
-		code := 0
-		if err != nil {
-			var exit *exec.ExitError
-			if !errors.As(err, &exit) {
-				t.Fatal(err)
-			}
-			code = exit.ExitCode()
-		}
-		if code != wantExit {
-			t.Fatalf("%v: exit %d, want %d\nstdout: %s\nstderr: %s", args, code, wantExit, &stdout, &stderr)
-		}
-		return validateContract(t, schema, stdout.Bytes())
+func invokeCLI(t *testing.T, binary, repo string, wantExit int, args ...string) (string, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = repo
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
 	}
-	write := func(t *testing.T, path, value string) {
-		t.Helper()
-		if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
+	code := 0
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
 			t.Fatal(err)
 		}
+		code = exit.ExitCode()
 	}
+	if code != wantExit {
+		t.Fatalf("%v: exit %d, want %d\nstdout: %s\nstderr: %s", args, code, wantExit, &stdout, &stderr)
+	}
+	return stdout.String(), stderr.String()
+}
 
-	for _, tc := range []struct {
-		name, config, command, state, reason string
-		exit                                 int
-		prepare                              string
-		wantRun                              bool
-	}{
-		{"verify-pass", "", "verify", "pass", "checks_passed", 0, "", true},
-		{"status-pass", "", "status", "pass", "checks_passed", 0, "verify", true},
-		{"ci-pass", "", "ci", "pass", "checks_passed", 0, "", true},
-		{"dirty-pass", "", "verify", "pass", "checks_passed", 0, "dirty", true},
-		{"verify-fail", failingConfig, "verify", "fail", "check_failed", 1, "", true},
-		{"status-stale", "", "status", "stale", "snapshot_changed", 1, "stale", true},
-		{"verify-stale", "version: 1\nverify:\n  commands:\n    - id: mutate\n      run: echo changed >> marker.txt\n", "verify", "stale", "snapshot_changed", 1, "", true},
-		{"no-evidence", "", "status", "blocked", "no_evidence", 2, "", false},
-		{"config-invalid", "version: 999\n", "verify", "blocked", "config_invalid", 2, "", false},
-		{"tool-unavailable", "version: 1\nverify:\n  commands:\n    - id: missing\n      run: lunarforge_nonexistent_contract_check\n    - id: later\n      run: echo skipped\n", "verify", "blocked", "tool_unavailable", 2, "", true},
-		{"timed-out", "version: 1\nverify:\n  commands:\n    - id: slow\n      run: exec sleep 5\n      timeout_seconds: 1\n", "verify", "blocked", "timed_out", 2, "", true},
-		{"evidence-corrupt", "", "status", "error", "evidence_corrupt", 3, "corrupt", false},
-		{"legacy-evidence", "", "status", "pass", "checks_passed", 0, "legacy", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := tc.config
-			if cfg == "" {
-				cfg = "version: 1\nverify:\n  commands:\n    - id: ok\n      run: echo check-output\n"
-			}
-			repo := newTestRepo(t, cfg)
-			headCmd := exec.Command("git", "rev-parse", "HEAD")
-			headRaw, err := headCmd.Output()
-			if err != nil {
-				t.Fatal(err)
-			}
-			head := strings.TrimSpace(string(headRaw))
-			switch tc.prepare {
-			case "verify", "stale", "corrupt", "legacy":
-				invoke(t, repo, 0, "verify", "--json", "--quiet")
-			}
-			switch tc.prepare {
-			case "dirty", "stale":
-				write(t, filepath.Join(repo, "marker.txt"), "changed\n")
-			case "corrupt":
-				write(t, filepath.Join(latestEvidenceDir(t, repo), "evidence.json"), "{invalid")
-			case "legacy":
-				path := filepath.Join(latestEvidenceDir(t, repo), "evidence.json")
-				data, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				// Previous schema-1 evidence remains readable after upgrading.
-				write(t, path, strings.ReplaceAll(string(data), head, head[:7]))
-			}
-			got := invoke(t, repo, tc.exit, tc.command, "--json")
-			if got["command"] != tc.command || got["state"] != tc.state || got["reason"] != tc.reason {
-				t.Fatalf("unexpected envelope: %+v", got)
-			}
-			_, hasRun := got["run"]
-			_, hasChecks := got["checks"]
-			if hasRun != tc.wantRun || hasChecks != tc.wantRun {
-				t.Fatalf("run/check presence must match the outcome: %+v", got)
-			}
-			if tc.reason == "config_invalid" || tc.reason == "evidence_corrupt" {
-				if got["error"] == nil {
-					t.Fatal("early failure must include error detail")
-				}
-				return
-			}
-			current := got["repository"].(map[string]any)
-			if current["head"] != head {
-				t.Fatalf("repository.head = %v, want full Git ID %s", current["head"], head)
-			}
-			if !hasRun {
-				return
-			}
-			run := got["run"].(map[string]any)
-			wantHead := head
-			if tc.prepare == "legacy" {
-				wantHead = head[:7]
-			}
-			if run["head"] != wantHead {
-				t.Fatalf("run.head = %v, want %s", run["head"], wantHead)
-			}
-			if tc.state == "pass" {
-				// These equalities and explicit dirty booleans are what consumers
-				// need before accepting clean, independently verified task input.
-				if current["fingerprint"] != run["fingerprint"] || run["fingerprint"] != run["final_fingerprint"] {
-					t.Fatalf("passing evidence must bind to the current snapshot: %+v", got)
-				}
-				dirty := tc.prepare == "dirty"
-				if current["dirty"] != dirty || run["dirty"] != dirty {
-					t.Fatalf("dirty must be an explicit, accurate boolean: %+v", got)
-				}
-			}
-			if tc.name == "verify-fail" || tc.name == "tool-unavailable" {
-				checks := got["checks"].([]any)
-				last := checks[len(checks)-1].(map[string]any)
-				if last["state"] != "skipped" || last["exit_code"] != float64(-1) {
-					t.Fatalf("unexecuted check must be explicit: %+v", last)
-				}
-			}
-			if tc.name == "status-stale" && (run["state"] != "pass" || current["fingerprint"] == run["fingerprint"]) {
-				t.Fatal("status must distinguish historical success from current freshness")
-			}
+func (cli contractCLI) invoke(t *testing.T, repo string, wantExit int, command string) map[string]any {
+	t.Helper()
+	stdout, _ := invokeCLI(t, cli.binary, repo, wantExit, command, "--json")
+	return validateContract(t, cli.schema, []byte(stdout))
+}
+
+func writeContractFile(t *testing.T, path, value string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func contractHead(t *testing.T, repo string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repo
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func assertEnvelope(t *testing.T, got map[string]any, command, state, reason string, wantRun bool) {
+	t.Helper()
+	if got["command"] != command || got["state"] != state || got["reason"] != reason {
+		t.Fatalf("unexpected envelope: %+v", got)
+	}
+	_, hasRun := got["run"]
+	_, hasChecks := got["checks"]
+	if hasRun != wantRun || hasChecks != wantRun {
+		t.Fatalf("run/check presence must match the outcome: %+v", got)
+	}
+}
+
+func assertCurrentHead(t *testing.T, got map[string]any, head string) {
+	t.Helper()
+	current := got["repository"].(map[string]any)
+	if current["head"] != head {
+		t.Fatalf("repository.head = %v, want full Git ID %s", current["head"], head)
+	}
+}
+
+func assertRunHead(t *testing.T, got map[string]any, head string) {
+	t.Helper()
+	run := got["run"].(map[string]any)
+	if run["head"] != head {
+		t.Fatalf("run.head = %v, want %s", run["head"], head)
+	}
+}
+
+func assertPassingSnapshot(t *testing.T, got map[string]any, dirty bool) {
+	t.Helper()
+	current := got["repository"].(map[string]any)
+	run := got["run"].(map[string]any)
+	if current["fingerprint"] != run["fingerprint"] || run["fingerprint"] != run["final_fingerprint"] {
+		t.Fatalf("passing evidence must bind to the current snapshot: %+v", got)
+	}
+	if current["dirty"] != dirty || run["dirty"] != dirty {
+		t.Fatalf("dirty must be an explicit, accurate boolean: %+v", got)
+	}
+}
+
+const contractPassingConfig = `version: 1
+verify:
+  commands:
+    - id: ok
+      run: echo check-output
+`
+
+func (cli contractCLI) testPassing(t *testing.T) {
+	for _, command := range []string{"verify", "ci"} {
+		t.Run(command, func(t *testing.T) {
+			repo := newTestRepo(t, contractPassingConfig)
+			got := cli.invoke(t, repo, 0, command)
+			assertEnvelope(t, got, command, "pass", "checks_passed", true)
+			assertCurrentHead(t, got, contractHead(t, repo))
+			assertRunHead(t, got, contractHead(t, repo))
+			assertPassingSnapshot(t, got, false)
 		})
 	}
+	t.Run("status", func(t *testing.T) {
+		repo := newTestRepo(t, contractPassingConfig)
+		cli.invoke(t, repo, 0, "verify")
+		got := cli.invoke(t, repo, 0, "status")
+		assertEnvelope(t, got, "status", "pass", "checks_passed", true)
+		assertCurrentHead(t, got, contractHead(t, repo))
+		assertRunHead(t, got, contractHead(t, repo))
+		assertPassingSnapshot(t, got, false)
+	})
+	t.Run("dirty", func(t *testing.T) {
+		repo := newTestRepo(t, contractPassingConfig)
+		writeContractFile(t, filepath.Join(repo, "marker.txt"), "changed\n")
+		got := cli.invoke(t, repo, 0, "verify")
+		assertEnvelope(t, got, "verify", "pass", "checks_passed", true)
+		assertCurrentHead(t, got, contractHead(t, repo))
+		assertRunHead(t, got, contractHead(t, repo))
+		assertPassingSnapshot(t, got, true)
+	})
+}
+
+func assertSkippedCheck(t *testing.T, got map[string]any) {
+	t.Helper()
+	checks := got["checks"].([]any)
+	last := checks[len(checks)-1].(map[string]any)
+	if last["state"] != "skipped" || last["exit_code"] != float64(-1) {
+		t.Fatalf("unexecuted check must be explicit: %+v", last)
+	}
+}
+
+func (cli contractCLI) testFailed(t *testing.T) {
+	repo := newTestRepo(t, failingConfig)
+	got := cli.invoke(t, repo, 1, "verify")
+	assertEnvelope(t, got, "verify", "fail", "check_failed", true)
+	assertCurrentHead(t, got, contractHead(t, repo))
+	assertRunHead(t, got, contractHead(t, repo))
+	assertSkippedCheck(t, got)
+}
+
+func (cli contractCLI) testUnavailable(t *testing.T) {
+	repo := newTestRepo(t, `version: 1
+verify:
+  commands:
+    - id: missing
+      run: lunarforge_nonexistent_contract_check
+    - id: later
+      run: echo skipped
+`)
+	got := cli.invoke(t, repo, 2, "verify")
+	assertEnvelope(t, got, "verify", "blocked", "tool_unavailable", true)
+	assertCurrentHead(t, got, contractHead(t, repo))
+	assertRunHead(t, got, contractHead(t, repo))
+	assertSkippedCheck(t, got)
+}
+
+func (cli contractCLI) testTimeout(t *testing.T) {
+	repo := newTestRepo(t, `version: 1
+verify:
+  commands:
+    - id: slow
+      run: exec sleep 5
+      timeout_seconds: 1
+`)
+	got := cli.invoke(t, repo, 2, "verify")
+	assertEnvelope(t, got, "verify", "blocked", "timed_out", true)
+	assertCurrentHead(t, got, contractHead(t, repo))
+	assertRunHead(t, got, contractHead(t, repo))
+}
+
+func (cli contractCLI) testStaleStatus(t *testing.T) {
+	repo := newTestRepo(t, contractPassingConfig)
+	cli.invoke(t, repo, 0, "verify")
+	writeContractFile(t, filepath.Join(repo, "marker.txt"), "changed\n")
+	got := cli.invoke(t, repo, 1, "status")
+	assertEnvelope(t, got, "status", "stale", "snapshot_changed", true)
+	assertCurrentHead(t, got, contractHead(t, repo))
+	assertRunHead(t, got, contractHead(t, repo))
+	current := got["repository"].(map[string]any)
+	run := got["run"].(map[string]any)
+	if run["state"] != "pass" || current["fingerprint"] == run["fingerprint"] {
+		t.Fatal("status must distinguish historical success from current freshness")
+	}
+}
+
+func (cli contractCLI) testStaleVerify(t *testing.T) {
+	repo := newTestRepo(t, `version: 1
+verify:
+  commands:
+    - id: mutate
+      run: echo changed >> marker.txt
+`)
+	got := cli.invoke(t, repo, 1, "verify")
+	assertEnvelope(t, got, "verify", "stale", "snapshot_changed", true)
+	assertCurrentHead(t, got, contractHead(t, repo))
+	assertRunHead(t, got, contractHead(t, repo))
+}
+
+func (cli contractCLI) testNoEvidence(t *testing.T) {
+	repo := newTestRepo(t, contractPassingConfig)
+	got := cli.invoke(t, repo, 2, "status")
+	assertEnvelope(t, got, "status", "blocked", "no_evidence", false)
+	assertCurrentHead(t, got, contractHead(t, repo))
+}
+
+func (cli contractCLI) testInvalidConfig(t *testing.T) {
+	repo := newTestRepo(t, "version: 999\n")
+	got := cli.invoke(t, repo, 2, "verify")
+	assertEnvelope(t, got, "verify", "blocked", "config_invalid", false)
+	if got["error"] == nil {
+		t.Fatal("early failure must include error detail")
+	}
+}
+
+func (cli contractCLI) testCorruptEvidence(t *testing.T) {
+	repo := newTestRepo(t, contractPassingConfig)
+	cli.invoke(t, repo, 0, "verify")
+	writeContractFile(t, filepath.Join(latestEvidenceDir(t, repo), "evidence.json"), "{invalid")
+	got := cli.invoke(t, repo, 3, "status")
+	assertEnvelope(t, got, "status", "error", "evidence_corrupt", false)
+	if got["error"] == nil {
+		t.Fatal("early failure must include error detail")
+	}
+}
+
+func (cli contractCLI) testLegacyEvidence(t *testing.T) {
+	repo := newTestRepo(t, contractPassingConfig)
+	cli.invoke(t, repo, 0, "verify")
+	path := filepath.Join(latestEvidenceDir(t, repo), "evidence.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := contractHead(t, repo)
+	// Previous schema-1 evidence remains readable after upgrading.
+	writeContractFile(t, path, strings.ReplaceAll(string(data), head, head[:7]))
+	got := cli.invoke(t, repo, 0, "status")
+	assertEnvelope(t, got, "status", "pass", "checks_passed", true)
+	assertCurrentHead(t, got, head)
+	assertRunHead(t, got, head[:7])
+	assertPassingSnapshot(t, got, false)
 }
 
 func TestPublishedContractFixtures(t *testing.T) {

@@ -27,17 +27,13 @@ func runVerifyCommand(command string, args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: lf %s [--json] [--continue-on-failure] [--quiet]\n\nRuns repository checks and writes snapshot-bound evidence.\n", command)
 	}
-	if err := fs.Parse(args); err != nil {
-		return &exitError{code: 2, message: err.Error()}
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	l, err := load()
 	if err != nil {
-		if *asJSON {
-			writeJSON(jsonFailure(command, evidence.ResultBlocked, evidence.ReasonConfigInvalid, err))
-			return &exitError{code: 2}
-		}
-		return err
+		return commandFailure(*asJSON, command, evidence.ResultBlocked, evidence.ReasonConfigInvalid, err)
 	}
 
 	opts := runner.Options{
@@ -56,11 +52,7 @@ func runVerifyCommand(command string, args []string) error {
 
 	res, err := runner.Run(l.cfg, opts)
 	if err != nil {
-		if *asJSON {
-			writeJSON(jsonFailure(command, evidence.ResultError, evidence.ReasonInternalError, err))
-			return &exitError{code: 3}
-		}
-		return err
+		return commandFailure(*asJSON, command, evidence.ResultError, evidence.ReasonInternalError, err)
 	}
 
 	if *asJSON {
@@ -68,7 +60,7 @@ func runVerifyCommand(command string, args []string) error {
 	} else {
 		printVerifyText(command, l, res)
 	}
-	writeStepSummary(res.Evidence, relPath(l.repoDir, filepath.Join(res.RunDir, "evidence.json")))
+	writeStepSummary(res.Evidence, relPath(l.repoDir, filepath.Join(res.RunDir, evidence.FileName)))
 	if code := exitCodeForState(res.Evidence.Result); code != 0 {
 		return &exitError{code: code}
 	}
@@ -85,11 +77,11 @@ func printVerifyText(command string, l *loaded, res *runner.Result) {
 	for _, c := range res.Evidence.Commands {
 		switch c.Result {
 		case evidence.ResultPassed:
-			fmt.Printf("✅ %s passed\t%s\n", c.ID, fmtDuration(c.DurationMs))
+			fmt.Printf("✅ %s passed\t%s\n", c.ID, evidence.FormatDuration(c.DurationMs))
 		case evidence.ResultFailed:
-			fmt.Printf("❌ %s failed\t%s\n", c.ID, fmtDuration(c.DurationMs))
+			fmt.Printf("❌ %s failed\t%s\n", c.ID, evidence.FormatDuration(c.DurationMs))
 		case evidence.ResultBlocked:
-			fmt.Printf("⛔ %s blocked (%s)\t%s\n", c.ID, c.Reason, fmtDuration(c.DurationMs))
+			fmt.Printf("⛔ %s blocked (%s)\t%s\n", c.ID, c.Reason, evidence.FormatDuration(c.DurationMs))
 		case evidence.ResultSkipped:
 			fmt.Printf("⏭️  %s skipped (%s)\n", c.ID, c.Reason)
 		}
@@ -109,7 +101,7 @@ func printVerifyText(command string, l *loaded, res *runner.Result) {
 		fmt.Printf("stderr: %s\n", relPath(l.repoDir, filepath.Join(res.RunDir, failed.StderrPath)))
 	}
 	fmt.Println()
-	fmt.Printf("Evidence: %s\n", relPath(l.repoDir, filepath.Join(res.RunDir, "evidence.json")))
+	fmt.Printf("Evidence: %s\n", relPath(l.repoDir, filepath.Join(res.RunDir, evidence.FileName)))
 	fmt.Printf("Fingerprint: %s\n", res.Evidence.DiffHash)
 }
 
@@ -120,13 +112,6 @@ func firstProblem(ev *evidence.Evidence) *evidence.Command {
 		}
 	}
 	return nil
-}
-
-func fmtDuration(ms int64) string {
-	if ms < 100 {
-		return fmt.Sprintf("%dms", ms)
-	}
-	return fmt.Sprintf("%.1fs", float64(ms)/1000.0)
 }
 
 func relPath(base, target string) string {
@@ -150,7 +135,7 @@ func writeStepSummary(ev *evidence.Evidence, evidenceRel string) {
 	fmt.Fprintln(f, "| Check | State | Duration |")
 	fmt.Fprintln(f, "|---|---|---:|")
 	for _, c := range ev.Commands {
-		fmt.Fprintf(f, "| %s | %s | %s |\n", c.ID, c.Result, fmtDuration(c.DurationMs))
+		fmt.Fprintf(f, "| %s | %s | %s |\n", c.ID, c.Result, evidence.FormatDuration(c.DurationMs))
 	}
 	fmt.Fprintf(f, "\nEvidence: `%s`\n", evidenceRel)
 }

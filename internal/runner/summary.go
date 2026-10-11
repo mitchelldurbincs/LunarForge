@@ -33,7 +33,7 @@ func writeSummary(runDir string, ev *evidence.Evidence) error {
 			logs = fmt.Sprintf("[stdout](%s) / [stderr](%s)", c.StdoutPath, c.StderrPath)
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n",
-			c.ID, plainResult(c.Result), fmtSeconds(c.DurationMs), logs)
+			c.ID, plainResult(c.Result), evidence.FormatDuration(c.DurationMs), logs)
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "Run id: %s  \n", ev.RunID)
@@ -58,11 +58,4 @@ func plainResult(result string) string {
 	default:
 		return result
 	}
-}
-
-func fmtSeconds(ms int64) string {
-	if ms < 100 {
-		return fmt.Sprintf("%dms", ms)
-	}
-	return fmt.Sprintf("%.1fs", float64(ms)/1000.0)
 }

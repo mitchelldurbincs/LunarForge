@@ -19,34 +19,22 @@ func cmdStatus(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: lf status [--json] [--require-fresh-passing]")
 	}
-	if err := fs.Parse(args); err != nil {
-		return &exitError{code: 2, message: err.Error()}
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	l, err := load()
 	if err != nil {
-		if *asJSON {
-			writeJSON(jsonFailure("status", evidence.ResultBlocked, evidence.ReasonConfigInvalid, err))
-			return &exitError{code: 2}
-		}
-		return err
+		return commandFailure(*asJSON, "status", evidence.ResultBlocked, evidence.ReasonConfigInvalid, err)
 	}
 	currentHash, err := l.currentDiffHash()
 	if err != nil {
-		if *asJSON {
-			writeJSON(jsonFailure("status", evidence.ResultError, evidence.ReasonInternalError, err))
-			return &exitError{code: 3}
-		}
-		return err
+		return commandFailure(*asJSON, "status", evidence.ResultError, evidence.ReasonInternalError, err)
 	}
 
 	ev, runDir, loadErr := evidence.LoadLatest(l.evidenceDir)
 	if loadErr != nil && !errors.Is(loadErr, evidence.ErrNoEvidence) {
-		if *asJSON {
-			writeJSON(jsonFailure("status", evidence.ResultError, evidence.ReasonEvidenceCorrupt, loadErr))
-			return &exitError{code: 3}
-		}
-		return loadErr
+		return commandFailure(*asJSON, "status", evidence.ResultError, evidence.ReasonEvidenceCorrupt, loadErr)
 	}
 	if errors.Is(loadErr, evidence.ErrNoEvidence) {
 		ev = nil
